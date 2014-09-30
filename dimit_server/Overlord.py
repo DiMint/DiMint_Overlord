@@ -1,13 +1,51 @@
-import thread
-from Server import Server
+import threading
+import zmq
+
+class ZmqThreadForClient(threading.Thread):
+    def __init__(self, port, nodes, nodes_lock):
+        threading.Thread.__init__(self)
+        self.port = port
+        self.nodes = nodes
+        self.nodes_lock = nodes_lock
+        context = zmq.Context()
+        self.socket = context.socket(zmq.REP)
+        self.socket.bind("tcp://*:%s" % port)
+
+    def run(self):
+        while True:
+            message = self.socket.recv()
+            self.socket.send(message)
+            print("asdf", message)
+            self.nodes_lock.acquire()
+            # use nodes
+            self.nodes_lock.release()
+
+class ZmqThreadForNode(threading.Thread):
+    def __init__(self, port, nodes, nodes_lock):
+        threading.Thread.__init__(self)
+        self.port = port
+        self.nodes = nodes
+        self.nodes_lock = nodes_lock
+        context = zmq.Context()
+        self.socket = context.socket(zmq.REP)
+        self.socket.bind("tcp://*:%s" % port)
+
+    def run(self):
+        while True:
+            message = self.socket.recv()
+            self.socket.send(message)
+            print("qwer", message)
+            self.nodes_lock.acquire()
+            # modify nodes
+            self.nodes_lock.release()
 
 class Overlord:
     def __init__(self, port_for_client, port_for_node):
-        self.client_mq = []
-        self.node_mq = []
-        self.server_for_client = Server(port_for_client, self.client_mq)
-        self.server_for_node = Server(port_for_node, self.node_mq)
+        self.nodes = []
+        self.nodes_lock = threading.Lock()
+        self.zmqThreadForClient = ZmqThreadForClient(port_for_client, self.nodes, self.nodes_lock)
+        self.zmqThreadForNode = ZmqThreadForNode(port_for_node, self.nodes, self.nodes_lock)
 
     def run(self):
-        self.server_for_client.start()
-        self.server_for_node.start()
+        self.zmqThreadForClient.start()
+        self.zmqThreadForNode.start()
