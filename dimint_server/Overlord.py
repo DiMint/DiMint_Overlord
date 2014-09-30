@@ -7,8 +7,8 @@ class ZmqThreadForClient(threading.Thread):
         self.port = port
         self.nodes = nodes
         self.nodes_lock = nodes_lock
-        context = zmq.Context()
-        self.socket = context.socket(zmq.REP)
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.REP)
         self.socket.bind("tcp://*:%s" % port)
 
     def run(self):
@@ -18,6 +18,7 @@ class ZmqThreadForClient(threading.Thread):
             print("asdf", message)
             self.nodes_lock.acquire()
             # use nodes
+            print(self.nodes)
             self.nodes_lock.release()
 
 class ZmqThreadForNode(threading.Thread):
@@ -26,8 +27,8 @@ class ZmqThreadForNode(threading.Thread):
         self.port = port
         self.nodes = nodes
         self.nodes_lock = nodes_lock
-        context = zmq.Context()
-        self.socket = context.socket(zmq.REP)
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.REP)
         self.socket.bind("tcp://*:%s" % port)
 
     def run(self):
@@ -37,6 +38,9 @@ class ZmqThreadForNode(threading.Thread):
             print("qwer", message)
             self.nodes_lock.acquire()
             # modify nodes
+            context = zmq.Context()
+            socket = context.socket(zmq.REQ)
+            self.nodes.append((context, socket))
             self.nodes_lock.release()
 
 class Overlord:
