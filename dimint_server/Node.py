@@ -1,49 +1,36 @@
-import threading
-import zmq
+import threading, zmq, json
 
-class ZmqThreadForClient(threading.Thread):
-    def __init__(self, port, nodes, nodes_lock):
-        threading.Thread.__init__(self)
+class Node(threading.Thread):
+    def __init__(self, host, port):
+        self.host = host
         self.port = port
-        self.nodes = nodes
-        self.nodes_lock = nodes_lock
+        self.address = 'tcp://{0}:{1}'.format(self.host, self.port)
         context = zmq.Context()
         self.socket = context.socket(zmq.REP)
-        self.socket.bind("tcp://*:%s" % port)
+        self.socket.bind(self.address)
+        self.storage = {}
 
     def run(self):
         while True:
             message = self.socket.recv()
-            print "qwer", message
-            nodes_lock.acquire()
-            # use nodes
-            nodes_lock.release()
+            result = self.__process(message)
+            response = json.dumps(result).encode('utf-8')
+            print (result)
+            self.socket.send(response)
 
-class ZmqThreadForNode(threading.Thread):
-    def __init__(self, port, nodes, nodes_lock):
-        threading.Thread.__init__(self)
-        self.port = port
-        self.nodes = nodes
-        self.nodes_lock = nodes_lock
-        context = zmq.Context()
-        self.socket = context.socket(zmq.REP)
-        self.socket.bind("tcp://*:%s" % port)
-
-    def run(self):
-        while True:
-            message = self.socket.recv()
-            print "qwer", message
-            nodes_lock.acquire()
-            # modify nodes
-            nodes_lock.release()
-
-class Overlord:
-    def __init__(self, port_for_client, port_for_node):
-        self.nodes_lock = threading.Lock()
-        self.nodes = []
-        self.zmqThreadForClient = ZmqThreadForClient(port_for_client, self.nodes, self.nodes_lock)
-        self.zmqThreadForNode = ZmqThreadForNode(port_for_node, self.nodes, self.nodes_lock)
-
-    def run(self):
-        self.zmqThreadForClient.start()
-        self.zmqThreadForNode.start()
+    def __process(self, message):
+        print('Request {0}'.format(message))
+        try:
+            request = json.loads(message.decode('utf-8'))
+            cmd = request['cmd']
+            key = request['key']
+            response = {}
+            if cmd == 'get':
+                value = self.storage[key]
+            elif cmd == 'set':
+                value = request['value']
+                self.storage[key] = value
+        except:
+            value = None
+        response['value'] = value
+        return response
