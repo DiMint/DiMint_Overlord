@@ -4,98 +4,79 @@ import time
 
 from kazoo.client import KazooClient
 
-active_request = {}
-active_result = {}
+class OverlordTask(threading.Thread):
+    __config = None
+    __port_for_client = None
+    __port_for_node = None
+    __zk = None
+    __nodes = []
 
-
-class ZmqThreadForClient(threading.Thread):
-    def __init__(self, config, nodes, nodes_lock, event, zk):
+    def __init__(self, config, zk):
         threading.Thread.__init__(self)
-        self.config = config
-        self.port = self.config['port_for_client']
-        self.nodes = nodes
-        self.nodes_lock = nodes_lock
-        self.context = zmq.Context()
-        self.socket = self.context.socket(zmq.REP)
-        self.socket.bind("tcp://*:%s" % self.port)
-        self.event = event
-        self.zk = zk
+        self.__config = config
+        self.__port_for_client = self.__config['port_for_client']
+        self.__port_for_node = self.__config['port_for_node']
+        self.__zk = zk
 
     def run(self):
+        context = zmq.Context()
+        frontend = context.socket(zmq.ROUTER)
+        frontend.bind("tcp://*:%s" % self.__port_for_client)
+        backend = context.socket(zmq.DEALER)
+        backend.bind("tcp://*:%s" % self.__port_for_node)
+        poll = zmq.Poller()
+        poll.register(frontend, zmq.POLLIN)
+        poll.register(backend, zmq.POLLIN)
         while True:
-            message = self.socket.recv()
-            result = self.__process_request(message)
-            response = json.dumps(result).encode('utf-8')
-            print ('Response {0}'.format(response))
-            self.socket.send(response)
-            #self.nodes_lock.acquire()
-            # use nodes
-            #print(self.nodes)
-            #self.nodes_lock.release()
+            sockets = dict(poll.poll())
+            if frontend in sockets:
+                ident, temp, msg = frontend.recv_multipart()
+                self.__process_request(ident, msg, frontend, backend)
+            if backend in sockets:
+                ident, msg = backend.recv_multipart()
+                self.__process_response(ident, msg, frontend)
+        frontend.close()
+        backend.close()
+        context.term()
 
-    def __process_request(self, message):
-        global active_request, active_result
-        print('Request {0}'.format(message))
-        response = {}
+    def __process_request(self, ident, msg, frontend, backend):
+        print('Request {0} id {1}'.format(msg, ident))
         try:
-            request = json.loads(message.decode('utf-8'))
+            request = json.loads(msg.decode('utf-8'))
             cmd = request['cmd']
             if cmd == 'get_overlords':
+                response = {}
                 response['overlords'] = self.get_overlord_list()
+                self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
-                active_request = message
-                # self.event.clear()
-                # self.event.wait()
-                response['value'] = active_result['value']
+                backend.send_multipart([ident, msg])
             else:
+                response = {}
                 response['error'] = 'DIMINT_NOT_FOUND'
+                self.__process_response(ident, response, frontend)
         except Exception as e:
+            response = {}
             response['error'] = 'DIMINT_PARSE_ERROR'
-        return response
+            self.__process_response(ident, response, frontend)
+
+    def __process_response(self, ident, msg, frontend):
+        response = json.dumps(msg).encode('utf-8')
+        print ('Response {0}'.format(response))
+        frontend.send_multipart([ident, response])
 
     def get_overlord_list(self):
-        data = self.zk.get('/dimint/overlord/basic_info')[0]
+        data = self.__zk.get('/dimint/overlord/basic_info')[0]
         return json.loads(data.decode('utf-8'))
-
-
-class ZmqThreadForNode(threading.Thread):
-    def __init__(self, config, nodes, nodes_lock, event, zk):
-        threading.Thread.__init__(self)
-        self.config = config
-        self.port = self.config['port_for_node']
-        self.nodes = nodes
-        self.nodes_lock = nodes_lock
-        self.context = zmq.Context()
-        self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect("tcp://{0}:{1}".format('127.0.0.1', self.port))
-        self.event = event
-        self.zk = zk
-
-    def run(self):
-        global active_request, active_result
-        while True:
-            if not self.event.is_set():
-                message = active_request
-                self.socket.send(message)
-                result = self.socket.recv()
-                active_result = json.loads(result.decode('utf-8'))
-                self.event.set()
-
 
 class Overlord:
     def __init__(self, config_path=""):
-        self.nodes = []
-        self.nodes_lock = threading.Lock()
-        self.event = threading.Event()
         if (config_path == ""):
             config_path = './dimint_server.config'
         with open(config_path, 'r') as config_data:
             self.config = json.loads(config_data.read())
         self.register_to_zk()
-        self.zmqThreadForClient = ZmqThreadForClient(self.config, self.nodes, self.nodes_lock, self.event, self.zk)
-        self.zmqThreadForClient.daemon = True
-        self.zmqThreadForNode = ZmqThreadForNode(self.config, self.nodes, self.nodes_lock, self.event, self.zk)
-        self.zmqThreadForNode.daemon = True
+        self.overlord_task = OverlordTask(self.config, self.zk)
+        self.overlord_task.daemon = True
 
     def register_to_zk(self):
         self.zk = KazooClient(self.config.get('zookeeper_hosts',
@@ -113,9 +94,7 @@ class Overlord:
         self.zk.set(basic_info_path, json.dumps(overlord_data).encode('utf-8'))
 
     def run(self):
-        self.event.set()
-        self.zmqThreadForClient.start()
-        self.zmqThreadForNode.start()
+        self.overlord_task.start()
         while True:
             time.sleep(1)
 
@@ -133,3 +112,4 @@ class Overlord:
         self.zk.set(basic_info_path, json.dumps(overlord_data).encode('utf-8'))
 
         self.zk.stop()
+
