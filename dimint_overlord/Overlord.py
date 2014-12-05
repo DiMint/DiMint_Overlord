@@ -2,6 +2,7 @@ import threading, zmq, json
 import socket
 import time
 import traceback
+from hashlib import sha1
 
 from kazoo.client import KazooClient
 
@@ -48,6 +49,7 @@ class OverlordTask(threading.Thread):
             if cmd == 'get_overlords':
                 response = {}
                 response['overlords'] = self.get_overlord_list()
+                response['identity'] = self.__get_identity()
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
                 sender = self.__context.socket(zmq.PUSH)
@@ -66,6 +68,9 @@ class OverlordTask(threading.Thread):
         response = json.dumps(msg).encode('utf-8')
         print ('Response {0}'.format(response))
         frontend.send_multipart([ident, response])
+
+    def __get_identity(self):
+        return sha1(str(time.time()).encode('utf-8')).hexdigest()
 
     def get_overlord_list(self):
         overlord_list = self.__zk.get_children('/dimint/overlord/host_list')
