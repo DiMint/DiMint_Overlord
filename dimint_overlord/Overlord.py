@@ -1,6 +1,7 @@
 import threading, zmq, json
 import socket
 import time
+import traceback
 
 from kazoo.client import KazooClient
 
@@ -19,10 +20,10 @@ class OverlordTask(threading.Thread):
         self.__zk = zk
 
     def run(self):
-        context = zmq.Context()
-        frontend = context.socket(zmq.ROUTER)
+        self.__context = zmq.Context()
+        frontend = self.__context.socket(zmq.ROUTER)
         frontend.bind("tcp://*:%s" % self.__port_for_client)
-        backend = context.socket(zmq.DEALER)
+        backend = self.__context.socket(zmq.DEALER)
         backend.bind("tcp://*:%s" % self.__port_for_node)
         poll = zmq.Poller()
         poll.register(frontend, zmq.POLLIN)
@@ -37,26 +38,30 @@ class OverlordTask(threading.Thread):
                 self.__process_response(ident, msg, frontend)
         frontend.close()
         backend.close()
-        context.term()
+        self.__context.term()
 
     def __process_request(self, ident, msg, frontend, backend):
         print('Request {0} id {1}'.format(msg, ident))
         try:
             request = json.loads(msg.decode('utf-8'))
             cmd = request['cmd']
+            print(cmd)
+            print(request)
             if cmd == 'get_overlords':
                 response = {}
                 response['overlords'] = self.get_overlord_list()
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
-                sender = context.socket(zmq.PUSH)
-                sender.connect("tcp://127.0.0.1:{15556}")
-                sender.send_json([ident, msg])
+                sender = self.__context.socket(zmq.PUSH)
+                sender.connect("tcp://127.0.0.1:15556")
+                sender.send_multipart([ident, msg])
             else:
                 response = {}
                 response['error'] = 'DIMINT_NOT_FOUND'
                 self.__process_response(ident, response, frontend)
         except Exception as e:
+            print(e)
+            traceback.print_exc()
             response = {}
             response['error'] = 'DIMINT_PARSE_ERROR'
             self.__process_response(ident, response, frontend)
