@@ -1,10 +1,15 @@
 import threading, zmq, json
+import socket
+import time
+
+from kazoo.client import KazooClient
 
 active_request = {}
 active_result = {}
 
+
 class ZmqThreadForClient(threading.Thread):
-    def __init__(self, config, nodes, nodes_lock, event):
+    def __init__(self, config, nodes, nodes_lock, event, zk):
         threading.Thread.__init__(self)
         self.config = config
         self.port = self.config['port_for_client']
@@ -14,6 +19,7 @@ class ZmqThreadForClient(threading.Thread):
         self.socket = self.context.socket(zmq.REP)
         self.socket.bind("tcp://*:%s" % self.port)
         self.event = event
+        self.zk = zk
 
     def run(self):
         while True:
@@ -31,25 +37,29 @@ class ZmqThreadForClient(threading.Thread):
         global active_request, active_result
         print('Request {0}'.format(message))
         response = {}
-        request = json.loads(message.decode('utf-8'))
         try:
             request = json.loads(message.decode('utf-8'))
             cmd = request['cmd']
-            if cmd == 'get_overloads':
-                response['overloads'] = self.config['overloads']
+            if cmd == 'get_overlords':
+                response['overlords'] = self.get_overlord_list()
             elif cmd == 'get' or cmd == 'set':
                 active_request = message
-                self.event.clear()
-                self.event.wait()
+                # self.event.clear()
+                # self.event.wait()
                 response['value'] = active_result['value']
             else:
                 response['error'] = 'DIMINT_NOT_FOUND'
-        except:
+        except Exception as e:
             response['error'] = 'DIMINT_PARSE_ERROR'
         return response
 
+    def get_overlord_list(self):
+        data = self.zk.get('/dimint/overlord/basic_info')[0]
+        return json.loads(data.decode('utf-8'))
+
+
 class ZmqThreadForNode(threading.Thread):
-    def __init__(self, config, nodes, nodes_lock, event):
+    def __init__(self, config, nodes, nodes_lock, event, zk):
         threading.Thread.__init__(self)
         self.config = config
         self.port = self.config['port_for_node']
@@ -59,6 +69,7 @@ class ZmqThreadForNode(threading.Thread):
         self.socket = self.context.socket(zmq.REQ)
         self.socket.connect("tcp://{0}:{1}".format('127.0.0.1', self.port))
         self.event = event
+        self.zk = zk
 
     def run(self):
         global active_request, active_result
@@ -70,6 +81,7 @@ class ZmqThreadForNode(threading.Thread):
                 active_result = json.loads(result.decode('utf-8'))
                 self.event.set()
 
+
 class Overlord:
     def __init__(self, config_path=""):
         self.nodes = []
@@ -79,10 +91,45 @@ class Overlord:
             config_path = './dimint_server.config'
         with open(config_path, 'r') as config_data:
             self.config = json.loads(config_data.read())
-        self.zmqThreadForClient = ZmqThreadForClient(self.config, self.nodes, self.nodes_lock, self.event)
-        self.zmqThreadForNode = ZmqThreadForNode(self.config, self.nodes, self.nodes_lock, self.event)
+        self.register_to_zk()
+        self.zmqThreadForClient = ZmqThreadForClient(self.config, self.nodes, self.nodes_lock, self.event, self.zk)
+        self.zmqThreadForClient.daemon = True
+        self.zmqThreadForNode = ZmqThreadForNode(self.config, self.nodes, self.nodes_lock, self.event, self.zk)
+        self.zmqThreadForNode.daemon = True
+
+    def register_to_zk(self):
+        self.zk = KazooClient(self.config.get('zookeeper_hosts',
+                                              '127.0.0.1:2181'))
+        self.zk.start()
+        self.zk.ensure_path('/dimint/overlord')
+
+        basic_info_path = '/dimint/overlord/basic_info'
+        if not self.zk.exists(basic_info_path):
+            self.zk.create(basic_info_path, b'[]')
+
+        addr = '{0}:{1}'.format(self.get_ip(), self.config['port_for_client'])
+        overlord_data = json.loads(self.zk.get(basic_info_path)[0].decode('utf-8'))
+        overlord_data.append(addr)
+        self.zk.set(basic_info_path, json.dumps(overlord_data).encode('utf-8'))
 
     def run(self):
         self.event.set()
         self.zmqThreadForClient.start()
         self.zmqThreadForNode.start()
+        while True:
+            time.sleep(1)
+
+    def get_ip(self):
+        return [(s.connect(('8.8.8.8', 80)), s.getsockname()[0], s.close())
+                for s in [socket.socket(socket.AF_INET,
+                                        socket.SOCK_DGRAM)]][0][1]
+
+    def __exit__(self, type, value, traceback):
+        basic_info_path = '/dimint/overlord/basic_info'
+        addr = '{0}:{1}'.format(self.get_ip(), self.config['port_for_client'])
+        overlord_data = json.loads(self.zk.get(basic_info_path)[0].decode('utf-8'))
+        overlord_data = [d for d in overlord_data if
+                         d != addr]
+        self.zk.set(basic_info_path, json.dumps(overlord_data).encode('utf-8'))
+
+        self.zk.stop()
