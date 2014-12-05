@@ -54,8 +54,8 @@ class ZmqThreadForClient(threading.Thread):
         return response
 
     def get_overlord_list(self):
-        data = self.zk.get('/dimint/overlord/basic_info')[0]
-        return json.loads(data.decode('utf-8'))
+        overlord_list = self.zk.get_children('/dimint/overlord/host_list')
+        return overlord_list if isinstance(overlord_list, list) else []
 
 
 class ZmqThreadForNode(threading.Thread):
@@ -101,16 +101,12 @@ class Overlord:
         self.zk = KazooClient(self.config.get('zookeeper_hosts',
                                               '127.0.0.1:2181'))
         self.zk.start()
-        self.zk.ensure_path('/dimint/overlord')
-
-        basic_info_path = '/dimint/overlord/basic_info'
-        if not self.zk.exists(basic_info_path):
-            self.zk.create(basic_info_path, b'[]')
+        self.zk.ensure_path('/dimint/overlord/host_list')
 
         addr = '{0}:{1}'.format(self.get_ip(), self.config['port_for_client'])
-        overlord_data = json.loads(self.zk.get(basic_info_path)[0].decode('utf-8'))
-        overlord_data.append(addr)
-        self.zk.set(basic_info_path, json.dumps(overlord_data).encode('utf-8'))
+        host_path = '/dimint/overlord/host_list/' + addr
+        if not self.zk.exists(host_path):
+            self.zk.create(host_path, b'', ephemeral=True)
 
     def run(self):
         self.event.set()
@@ -124,12 +120,8 @@ class Overlord:
                 for s in [socket.socket(socket.AF_INET,
                                         socket.SOCK_DGRAM)]][0][1]
 
-    def __exit__(self, type, value, traceback):
-        basic_info_path = '/dimint/overlord/basic_info'
-        addr = '{0}:{1}'.format(self.get_ip(), self.config['port_for_client'])
-        overlord_data = json.loads(self.zk.get(basic_info_path)[0].decode('utf-8'))
-        overlord_data = [d for d in overlord_data if
-                         d != addr]
-        self.zk.set(basic_info_path, json.dumps(overlord_data).encode('utf-8'))
+    def __del__(self):
+        self.zk.stop()
 
+    def __exit__(self, type, value, traceback):
         self.zk.stop()
