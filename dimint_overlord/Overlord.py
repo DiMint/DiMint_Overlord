@@ -45,8 +45,6 @@ class OverlordTask(threading.Thread):
         try:
             request = json.loads(msg.decode('utf-8'))
             cmd = request['cmd']
-            print(cmd)
-            print(request)
             if cmd == 'get_overlords':
                 response = {}
                 response['overlords'] = self.get_overlord_list()
@@ -60,8 +58,6 @@ class OverlordTask(threading.Thread):
                 response['error'] = 'DIMINT_NOT_FOUND'
                 self.__process_response(ident, response, frontend)
         except Exception as e:
-            print(e)
-            traceback.print_exc()
             response = {}
             response['error'] = 'DIMINT_PARSE_ERROR'
             self.__process_response(ident, response, frontend)
