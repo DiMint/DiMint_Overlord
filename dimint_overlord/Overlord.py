@@ -49,7 +49,9 @@ class OverlordTask(threading.Thread):
                 response['overlords'] = self.get_overlord_list()
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
-                backend.send_multipart([ident, msg])
+                sender = context.socket(zmq.PUSH)
+                sender.connect("tcp://127.0.0.1:{15556}")
+                sender.send_json([ident, msg])
             else:
                 response = {}
                 response['error'] = 'DIMINT_NOT_FOUND'
