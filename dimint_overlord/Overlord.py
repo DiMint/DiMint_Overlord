@@ -30,7 +30,7 @@ class OverlordTask(threading.Thread):
         while True:
             sockets = dict(poll.poll())
             if frontend in sockets:
-                ident, temp, msg = frontend.recv_multipart()
+                ident, msg = frontend.recv_multipart()
                 self.__process_request(ident, msg, frontend, backend)
             if backend in sockets:
                 ident, msg = backend.recv_multipart()
