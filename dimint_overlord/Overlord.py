@@ -65,7 +65,8 @@ class OverlordTask(threading.Thread):
             self.__process_response(ident, response, frontend)
 
     def __process_response(self, ident, msg, frontend):
-        response = json.dumps(msg).encode('utf-8')
+        response = json.dumps(msg).encode('utf-8') \
+            if not isinstance(msg, (str, bytes)) else msg
         print ('Response {0}'.format(response))
         frontend.send_multipart([ident, response])
 
