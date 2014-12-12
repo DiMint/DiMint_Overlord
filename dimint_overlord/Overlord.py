@@ -2,7 +2,7 @@ import threading, zmq, json
 import socket
 import time
 import traceback
-from hashlib import sha1
+from hashlib import md5
 import os, random
 
 from kazoo.client import KazooClient
@@ -135,7 +135,7 @@ class OverlordTask(threading.Thread):
         return overlord_list if isinstance(overlord_list, list) else []
 
     def __get_hashed_value(self, key):
-        return int(sha1(str(key).encode('utf-8')).hexdigest(), 16) % self.__config.get('hash_range')
+        return int(md5(str(key).encode('utf-8')).hexdigest(), 16) % self.__config.get('hash_range')
 
     def __get_node_list(self):
         node_list = self.__zk.get_children('/dimint/node/list')
