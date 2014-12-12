@@ -84,11 +84,21 @@ class OverlordTask(threading.Thread):
         backend.send_multipart([ident, response])
 
     def __get_identity(self):
-        return sha1(str(time.time()).encode('utf-8')).hexdigest()
+        while True:
+            hash_value = self.__get_hashed_value(time.time())
+            if not (self.__zk.exists('/dimint/node/list/{0}'.format(hash_value))):
+                return hash_value
 
     def get_overlord_list(self):
         overlord_list = self.__zk.get_children('/dimint/overlord/host_list')
         return overlord_list if isinstance(overlord_list, list) else []
+   
+    def __get_hashed_value(self, key):
+        return int(sha1(str(key).encode('utf-8')).hexdigest(), 16) % self.__config.get('hash_range')
+
+    def __get_node_list(self):
+        node_list = self.__zk.get_children('/dimint/node/list')
+        return node_list if isinstance(node_list, list) else []
 
 class Overlord:
     def __init__(self, config_path=""):
