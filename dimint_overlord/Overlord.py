@@ -33,7 +33,6 @@ class OverlordTask(threading.Thread):
         poll = zmq.Poller()
         poll.register(frontend, zmq.POLLIN)
         poll.register(backend, zmq.POLLIN)
-        i=0
         while True:
             sockets = dict(poll.poll())
             if frontend in sockets:
@@ -59,9 +58,15 @@ class OverlordTask(threading.Thread):
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
                 sender = self.__context.socket(zmq.PUSH)
-                send_addr = self.__select_node(request['key'], cmd=='set')
+                master_node, send_addr = self.__select_node(request['key'], cmd=='set')
                 sender.connect(send_addr)
                 sender.send_multipart([ident, msg])
+                if (cmd=='set'):
+                    master_path = ('dimint/node/role/{0}'.format(master_node))
+                    master_info = json.loads(
+                        self.__zk.get(master_path)[0].decode('utf-8'))
+                    master_info['stored_key'][request['key']]=0
+                    self.__zk.set(master_path, json.dumps(master_info).encode('utf-8'))
             else:
                 response = {}
                 response['error'] = 'DIMINT_NOT_FOUND'
@@ -114,11 +119,10 @@ class OverlordTask(threading.Thread):
                                                master_info['cmd_receive_port'])
                 master_push_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
                                                     master_info['push_to_slave_port'])
-
                 self.__zk.create(os.path.join(role_path, master, node_id),
                                  json.dumps(msg).encode('utf-8'))
                 return "slave", master_addr, master_push_addr
-
+        msg['stored_key']={}
         self.__zk.create(os.path.join(role_path, node_id),
                          json.dumps(msg).encode('utf-8'))
 
@@ -152,6 +156,7 @@ class OverlordTask(threading.Thread):
                 return master
         return master_list[0]
 
+    # returns [str(master_node_id), request_node_address]
     def __select_node(self, key, select_master):
         master = str(self.__select_master_node(key))
         if master is None:
@@ -163,7 +168,7 @@ class OverlordTask(threading.Thread):
                 self.__zk.get(master_path)[0].decode('utf-8'))
             master_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
                                                master_info['cmd_receive_port'])
-            return master_addr
+            return [master, master_addr]
         else:
             slave = random.choice(slaves)
             slave_path = '/dimint/node/role/{0}/{1}'.format(master, slave)
@@ -171,7 +176,7 @@ class OverlordTask(threading.Thread):
                 self.__zk.get(slave_path)[0].decode('utf-8'))
             slave_addr = 'tcp://{0}:{1}'.format(slave_info['ip'],
                                               slave_info['cmd_receive_port'])
-            return slave_addr
+            return [master, slave_addr]
             
 
 class Overlord:
