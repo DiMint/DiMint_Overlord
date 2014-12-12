@@ -7,22 +7,40 @@ import os, random
 
 from kazoo.client import KazooClient
 
+config = None
+
 class Hash():
     @staticmethod
     def get_hashed_value(key):
-        return int(md5(str(key).encode('utf-8')).hexdigest(), 16) % self.__config.get('hash_range')
+        global config
+        hash_range = config.get('hash_range')
+        print('hash_range : ' + str(hash_range))
+        return int(md5(str(key).encode('utf-8')).hexdigest(), 16) % hash_range
+
+class Network():
+    @staticmethod
+    def get_ip():
+        return [(s.connect(('8.8.8.8', 80)), s.getsockname()[0], s.close())
+                for s in [socket.socket(socket.AF_INET,
+                                        socket.SOCK_DGRAM)]][0][1]
 
 class ZooKeeperManager():
     __zk = None
 
-    def __init__(self, ip, port):
-        self.__zk = KazooClient(self.config.get('zookeeper_hosts', '127.0.0.1:2181'))
+    def __init__(self):
+        global config
+        zookeeper_hosts = config.get('zookeeper_hosts', '127.0.0.1:2181')
+        port_for_client = config['port_for_client']
+        print('zookeeper_hosts : ' + zookeeper_hosts)
+        print('port_for_client : ' + str(port_for_client))
+        self.__zk = KazooClient(zookeeper_hosts)
         self.__zk.start()
         self.__zk.ensure_path('/dimint/overlord/host_list')
-        addr = '{0}:{1}'.format(ip, port)
+        print('ip : ' + Network.get_ip())
+        addr = '{0}:{1}'.format(Network.get_ip(), port_for_client)
         host_path = '/dimint/overlord/host_list/' + addr
-        if self.is_exist(host_path):
-            self.create(host_path, b'', ephemeral=True)
+        if not self.is_exist(host_path):
+            self.__zk.create(host_path, b'', ephemeral=True)
 
     def delete_all_node_role(self):
         self.__zk.delete('/dimint/node/role', recursive=True)
@@ -36,10 +54,7 @@ class ZooKeeperManager():
         return overlord_list if isinstance(overlord_list, list) else []
 
     def is_exist(self, path):
-        return self.__zk.exists(host_path)
-
-    def create(self, path, msg, ephemeral=False):
-        self.__zk.create(path, msg, ephemeral)
+        return self.__zk.exists(path)
 
     def stop(self):
         self.__zk.stop()
@@ -70,28 +85,59 @@ class ZooKeeperManager():
                          json.dumps(msg).encode('utf-8'))
         return "master", None, None
 
+    def select_node(self, key, select_master):
+        master = str(self.__select_master_node(key))
+        if master is None:
+            return None
+        master_path = '/dimint/node/role/{0}'.format(master)
+        slaves = self.__zk.get_children(master_path)
+        if (select_master or len(slaves) < 1):
+            master_info = json.loads(
+                self.__zk.get(master_path)[0].decode('utf-8'))
+            master_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
+                                               master_info['cmd_receive_port'])
+            return master_addr
+        else:
+            slave = random.choice(slaves)
+            slave_path = '/dimint/node/role/{0}/{1}'.format(master, slave)
+            slave_info = json.loads(
+                self.__zk.get(slave_path)[0].decode('utf-8'))
+            slave_addr = 'tcp://{0}:{1}'.format(slave_info['ip'],
+                                              slave_info['cmd_receive_port'])
+            return slave_addr
+
+    def __select_master_node(self, key):
+        master_string_list = self.__zk.get_children('/dimint/node/role')
+        if (len(master_string_list) == 0):
+            return None
+        master_list = list(map(int, master_string_list))
+        hashed_value = Hash.get_hashed_value(key)
+        for master in master_list:
+            if (hashed_value <= master):
+                return master
+        return master_list[0]
+
 class OverlordTask(threading.Thread):
-    __config = None
-    __port_for_client = None
-    __port_for_node = None
     __zk_manager = None
     __nodes = []
 
-    def __init__(self, config, zk_manager):
+    def __init__(self, zk_manager):
         threading.Thread.__init__(self)
-        self.__config = config
-        self.__port_for_client = self.__config['port_for_client']
-        self.__port_for_node = self.__config['port_for_node']
         self.__zk_manager = zk_manager
         # TODO: temporary code. It must be deleted when you implement healthy check.
         self.__zk_manager.delete_all_node_role()
 
     def run(self):
+        global config
+        port_for_client = config['port_for_client']
+        port_for_node = config['port_for_node']
+        print('port_for_client : ' + str(port_for_client))
+        print('port_for_node : ' + str(port_for_node))
         self.__context = zmq.Context()
         frontend = self.__context.socket(zmq.ROUTER)
-        frontend.bind("tcp://*:%s" % self.__port_for_client)
+        frontend.bind("tcp://*:%s" % port_for_client)
         backend = self.__context.socket(zmq.ROUTER)
-        backend.bind("tcp://*:%s" % self.__port_for_node)
+        backend.bind("tcp://*:%s" % port_for_node)
         poll = zmq.Poller()
         poll.register(frontend, zmq.POLLIN)
         poll.register(backend, zmq.POLLIN)
@@ -121,7 +167,7 @@ class OverlordTask(threading.Thread):
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
                 sender = self.__context.socket(zmq.PUSH)
-                send_addr = self.__select_node(request['key'], cmd=='set')
+                send_addr = self.__zk_manager.select_node(request['key'], cmd=='set')
                 sender.connect(send_addr)
                 sender.send_multipart([ident, msg])
             else:
@@ -145,11 +191,14 @@ class OverlordTask(threading.Thread):
             frontend.send_multipart([ident, response])
 
     def add_node(self, ident, msg, backend):
+        global config
+        zookeeper_hosts = config.get('zookeeper_hosts')
+        print('zookeeper_hosts : ' + zookeeper_hosts)
         node_id = self.__zk_manager.get_identity()
         role, master_addr, master_push_addr = self.__zk_manager.determine_node_role(node_id, msg)
         response = {
             "node_id": node_id,
-            "zookeeper_hosts": self.__config.get('zookeeper_hosts'),
+            "zookeeper_hosts": zookeeper_hosts,
             "role": role,
         }
         if role == "slave":
@@ -162,38 +211,6 @@ class OverlordTask(threading.Thread):
             s.send_multipart([ident, json.dumps(cmd).encode('utf-8')])
         else:
             backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
-
-    def __select_master_node(self, key):
-        master_string_list = self.__zk.get_children('/dimint/node/role')
-        if (len(master_string_list) == 0):
-            return None
-        master_list = list(map(int, master_string_list))
-        hashed_value = self.__get_hashed_value(key)
-        for master in master_list:
-            if (hashed_value <= master):
-                return master
-        return master_list[0]
-
-    def __select_node(self, key, select_master):
-        master = str(self.__select_master_node(key))
-        if master is None:
-            return None
-        master_path = '/dimint/node/role/{0}'.format(master)
-        slaves = self.__zk.get_children(master_path)
-        if (select_master or len(slaves) < 1):
-            master_info = json.loads(
-                self.__zk.get(master_path)[0].decode('utf-8'))
-            master_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
-                                               master_info['cmd_receive_port'])
-            return master_addr
-        else:
-            slave = random.choice(slaves)
-            slave_path = '/dimint/node/role/{0}/{1}'.format(master, slave)
-            slave_info = json.loads(
-                self.__zk.get(slave_path)[0].decode('utf-8'))
-            slave_addr = 'tcp://{0}:{1}'.format(slave_info['ip'],
-                                              slave_info['cmd_receive_port'])
-            return slave_addr
             
 class Overlord:
     __zk_manager = None
@@ -202,17 +219,13 @@ class Overlord:
         if (config_path == ""):
             config_path = './dimint_server.config'
         with open(config_path, 'r') as config_data:
-            self.config = json.loads(config_data.read())
-        self.__zk_manager(self.get_ip(), self.config['port_for_client'])
-        self.overlord_task = OverlordTask(self.config, self.__zk_manager)
+            global config
+            config = json.loads(config_data.read())
+        self.__zk_manager = ZooKeeperManager()
+        self.overlord_task = OverlordTask(self.__zk_manager)
 
     def run(self):
         self.overlord_task.start()
-
-    def get_ip(self):
-        return [(s.connect(('8.8.8.8', 80)), s.getsockname()[0], s.close())
-                for s in [socket.socket(socket.AF_INET,
-                                        socket.SOCK_DGRAM)]][0][1]
 
     def __del__(self):
         self.__zk_manager.stop()
