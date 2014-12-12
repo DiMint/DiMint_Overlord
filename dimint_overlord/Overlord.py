@@ -2,15 +2,15 @@ import threading, zmq, json
 import socket
 import time
 import traceback
-from hashlib import sha1
-import os
+from hashlib import md5
+import os, random
 
 from kazoo.client import KazooClient
 
 class Hash():
     @staticmethod
     def get_hashed_value(key):
-        return int(sha1(str(key).encode('utf-8')).hexdigest(), 16) % self.__config.get('hash_range')
+        return int(md5(str(key).encode('utf-8')).hexdigest(), 16) % self.__config.get('hash_range')
 
 class ZooKeeperManager():
     __zk = None
@@ -95,14 +95,16 @@ class OverlordTask(threading.Thread):
         poll = zmq.Poller()
         poll.register(frontend, zmq.POLLIN)
         poll.register(backend, zmq.POLLIN)
+        i=0
         while True:
             sockets = dict(poll.poll())
             if frontend in sockets:
                 ident, msg = frontend.recv_multipart()
                 self.__process_request(ident, msg, frontend, backend)
             if backend in sockets:
-                ident, msg = backend.recv_multipart()
-                self.__process_response(ident, msg, frontend, backend)
+                result = backend.recv_multipart()
+                
+                self.__process_response(result[-2], result[-1], frontend, backend)
         frontend.close()
         backend.close()
         self.__context.term()
@@ -119,7 +121,8 @@ class OverlordTask(threading.Thread):
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
                 sender = self.__context.socket(zmq.PUSH)
-                sender.connect("tcp://127.0.0.1:15556")
+                send_addr = self.__select_node(request['key'], cmd=='set')
+                sender.connect(send_addr)
                 sender.send_multipart([ident, msg])
             else:
                 response = {}
@@ -128,6 +131,7 @@ class OverlordTask(threading.Thread):
         except Exception as e:
             response = {}
             response['error'] = 'DIMINT_PARSE_ERROR'
+            traceback.print_exc()
             self.__process_response(ident, response, frontend)
 
     def __process_response(self, ident, msg, frontend, backend=None):
@@ -154,13 +158,43 @@ class OverlordTask(threading.Thread):
 
             s = self.__context.socket(zmq.PUSH)
             s.connect(master_addr)
-            s.send_json({
-                'cmd': 'add_slave',
-            })
-            print('send add_slave to {0}'.format(master_addr))
+            cmd = {'cmd': 'add_slave'}
+            s.send_multipart([ident, json.dumps(cmd).encode('utf-8')])
         else:
             backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
 
+    def __select_master_node(self, key):
+        master_string_list = self.__zk.get_children('/dimint/node/role')
+        if (len(master_string_list) == 0):
+            return None
+        master_list = list(map(int, master_string_list))
+        hashed_value = self.__get_hashed_value(key)
+        for master in master_list:
+            if (hashed_value <= master):
+                return master
+        return master_list[0]
+
+    def __select_node(self, key, select_master):
+        master = str(self.__select_master_node(key))
+        if master is None:
+            return None
+        master_path = '/dimint/node/role/{0}'.format(master)
+        slaves = self.__zk.get_children(master_path)
+        if (select_master or len(slaves) < 1):
+            master_info = json.loads(
+                self.__zk.get(master_path)[0].decode('utf-8'))
+            master_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
+                                               master_info['cmd_receive_port'])
+            return master_addr
+        else:
+            slave = random.choice(slaves)
+            slave_path = '/dimint/node/role/{0}/{1}'.format(master, slave)
+            slave_info = json.loads(
+                self.__zk.get(slave_path)[0].decode('utf-8'))
+            slave_addr = 'tcp://{0}:{1}'.format(slave_info['ip'],
+                                              slave_info['cmd_receive_port'])
+            return slave_addr
+            
 class Overlord:
     __zk_manager = None
 
