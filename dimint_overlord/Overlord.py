@@ -36,7 +36,7 @@ class OverlordTask(threading.Thread):
                 self.__process_request(ident, msg, frontend, backend)
             if backend in sockets:
                 ident, msg = backend.recv_multipart()
-                self.__process_response(ident, msg, frontend)
+                self.__process_response(ident, msg, frontend, backend)
         frontend.close()
         backend.close()
         self.__context.term()
@@ -64,11 +64,24 @@ class OverlordTask(threading.Thread):
             response['error'] = 'DIMINT_PARSE_ERROR'
             self.__process_response(ident, response, frontend)
 
-    def __process_response(self, ident, msg, frontend):
-        response = json.dumps(msg).encode('utf-8') \
-            if not isinstance(msg, (str, bytes)) else msg
+    def __process_response(self, ident, msg, frontend, backend=None):
+        msg = json.loads(msg.decode('utf-8')) if isinstance(msg, bytes) else msg
+        response = json.dumps(msg).encode('utf-8')
         print ('Response {0}'.format(response))
-        frontend.send_multipart([ident, response])
+
+        if msg.get('cmd') == 'connect' and backend is not None:
+            self.add_node(ident, msg, backend)
+        else:
+            frontend.send_multipart([ident, response])
+
+    def add_node(self, ident, msg, backend):
+        # TODO: determine node's role
+        response = json.dumps({
+            "node_id": self.__get_identity(),
+            "zookeeper_hosts": self.__config.get('zookeeper_hosts'),
+            "role": "master",  # temp
+        }).encode('utf-8')
+        backend.send_multipart([ident, response])
 
     def __get_identity(self):
         return sha1(str(time.time()).encode('utf-8')).hexdigest()
