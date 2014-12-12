@@ -110,7 +110,7 @@ class ZooKeeperManager():
         master_string_list = self.__zk.get_children('/dimint/node/role')
         if (len(master_string_list) == 0):
             return None
-        master_list = list(map(int, master_string_list))
+        master_list = sorted([int(m) for m in master_string_list])
         hashed_value = Hash.get_hashed_value(key)
         for master in master_list:
             if (hashed_value <= master):
@@ -149,7 +149,7 @@ class OverlordTask(threading.Thread):
                 self.__process_request(ident, msg, frontend, backend)
             if backend in sockets:
                 result = backend.recv_multipart()
-                
+
                 self.__process_response(result[-2], result[-1], frontend, backend)
         frontend.close()
         backend.close()
@@ -211,7 +211,7 @@ class OverlordTask(threading.Thread):
             s.send_multipart([ident, json.dumps(cmd).encode('utf-8')])
         else:
             backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
-            
+
 class Overlord:
     __zk_manager = None
 
@@ -232,4 +232,3 @@ class Overlord:
 
     def __exit__(self, type, value, traceback):
         self.__zk_manager.stop()
-
