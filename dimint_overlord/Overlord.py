@@ -28,7 +28,7 @@ class OverlordTask(threading.Thread):
         self.__context = zmq.Context()
         frontend = self.__context.socket(zmq.ROUTER)
         frontend.bind("tcp://*:%s" % self.__port_for_client)
-        backend = self.__context.socket(zmq.DEALER)
+        backend = self.__context.socket(zmq.ROUTER)
         backend.bind("tcp://*:%s" % self.__port_for_node)
         poll = zmq.Poller()
         poll.register(frontend, zmq.POLLIN)
@@ -71,7 +71,7 @@ class OverlordTask(threading.Thread):
     def __process_response(self, ident, msg, frontend, backend=None):
         msg = json.loads(msg.decode('utf-8')) if isinstance(msg, bytes) else msg
         response = json.dumps(msg).encode('utf-8')
-        print ('Response {0}'.format(response))
+        print ('Response {0} id {1}'.format(response, ident))
 
         if msg.get('cmd') == 'connect' and backend is not None:
             self.add_node(ident, msg, backend)
@@ -92,9 +92,10 @@ class OverlordTask(threading.Thread):
 
             s = self.__context.socket(zmq.PUSH)
             s.connect(master_addr)
-            s.send_multipart([b'', json.dumps({
+            s.send_json({
                 'cmd': 'add_slave',
-            }).encode('utf-8')])
+            })
+            print('send add_slave to {0}'.format(master_addr))
         else:
             backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
 
@@ -125,12 +126,12 @@ class OverlordTask(threading.Thread):
         while True:
             hash_value = self.__get_hashed_value(time.time())
             if not (self.__zk.exists('/dimint/node/list/{0}'.format(hash_value))):
-                return hash_value
+                return str(hash_value)
 
     def get_overlord_list(self):
         overlord_list = self.__zk.get_children('/dimint/overlord/host_list')
         return overlord_list if isinstance(overlord_list, list) else []
-   
+
     def __get_hashed_value(self, key):
         return int(sha1(str(key).encode('utf-8')).hexdigest(), 16) % self.__config.get('hash_range')
 
