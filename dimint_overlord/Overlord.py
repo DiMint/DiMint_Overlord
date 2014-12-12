@@ -3,6 +3,7 @@ import socket
 import time
 import traceback
 from hashlib import sha1
+import os
 
 from kazoo.client import KazooClient
 
@@ -19,6 +20,9 @@ class OverlordTask(threading.Thread):
         self.__port_for_client = self.__config['port_for_client']
         self.__port_for_node = self.__config['port_for_node']
         self.__zk = zk
+
+        # TODO: temporary code. It must be deleted when you implement healthy check.
+        zk.delete('/dimint/node/role', recursive=True)
 
     def run(self):
         self.__context = zmq.Context()
@@ -75,13 +79,47 @@ class OverlordTask(threading.Thread):
             frontend.send_multipart([ident, response])
 
     def add_node(self, ident, msg, backend):
-        # TODO: determine node's role
-        response = json.dumps({
-            "node_id": self.__get_identity(),
+        node_id = self.__get_identity()
+        role, master_addr, master_push_addr = self.determine_node_role(node_id, msg)
+        response = {
+            "node_id": node_id,
             "zookeeper_hosts": self.__config.get('zookeeper_hosts'),
-            "role": "master",  # temp
-        }).encode('utf-8')
-        backend.send_multipart([ident, response])
+            "role": role,
+        }
+        if role == "slave":
+            response['master_addr'] = master_push_addr
+            backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
+
+            s = self.__context.socket(zmq.PUSH)
+            s.connect(master_addr)
+            s.send_multipart([b'', json.dumps({
+                'cmd': 'add_slave',
+            }).encode('utf-8')])
+        else:
+            backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
+
+    def determine_node_role(self, node_id, msg):
+        role_path = '/dimint/node/role'
+        self.__zk.ensure_path(role_path)
+        masters = self.__zk.get_children(role_path)
+        for master in masters:
+            slaves = self.__zk.get_children(os.path.join(role_path, master))
+            if len(slaves) < 2:
+                master_info = json.loads(
+                    self.__zk.get(os.path.join(role_path, master))[0].decode('utf-8'))
+                master_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
+                                               master_info['cmd_receive_port'])
+                master_push_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
+                                                    master_info['push_to_slave_port'])
+
+                self.__zk.create(os.path.join(role_path, master, node_id),
+                                 json.dumps(msg).encode('utf-8'))
+                return "slave", master_addr, master_push_addr
+
+        self.__zk.create(os.path.join(role_path, node_id),
+                         json.dumps(msg).encode('utf-8'))
+
+        return "master", None, None
 
     def __get_identity(self):
         while True:
@@ -108,7 +146,6 @@ class Overlord:
             self.config = json.loads(config_data.read())
         self.register_to_zk()
         self.overlord_task = OverlordTask(self.config, self.zk)
-        self.overlord_task.daemon = True
 
     def register_to_zk(self):
         self.zk = KazooClient(self.config.get('zookeeper_hosts',
@@ -123,8 +160,6 @@ class Overlord:
 
     def run(self):
         self.overlord_task.start()
-        while True:
-            time.sleep(1)
 
     def get_ip(self):
         return [(s.connect(('8.8.8.8', 80)), s.getsockname()[0], s.close())
