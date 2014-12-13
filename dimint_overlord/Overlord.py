@@ -137,6 +137,15 @@ class ZooKeeperManager():
     def enable_node(self, node, enable=True):
         self.__set_master_node_attribute(node, 'enabled', enable)
 
+    def get_node_msg(self, node_path):
+        node = self.__zk.get(node_path)
+        if not node[0]:
+            return {}
+        return json.loads(node[0].decode('utf-8'))
+
+    def set_node_msg(self, node_path, msg):
+        self.__zk.set(node_path, json.dumps(msg).encode('utf-8'))
+
 class OverlordTask(threading.Thread):
     __zk_manager = None
     __nodes = []
@@ -191,6 +200,18 @@ class OverlordTask(threading.Thread):
                 sender.send_multipart([ident, msg])
                 if (cmd=='set'):
                     self.__zk_manager.add_key_to_node(master_node, request['key'])
+            elif cmd == 'state':
+                response = {}
+                node_list = self.__zk_manager.get_node_list()
+                for node in node_list:
+                    msg = self.__zk_manager.get_node_msg('/dimint/node/list/{0}'.format(node))
+                    if not msg is None:
+                        msg['node_id'] = node
+                        if 'state' in response:
+                            response['state'].append(msg)
+                        else:
+                            response['state'] = [msg]
+                self.__process_response(ident, response, frontend)
             else:
                 response = {}
                 response['error'] = 'DIMINT_NOT_FOUND'
