@@ -173,9 +173,13 @@ class ZooKeeperManager():
                         dominated_master_info = node_info['slaves'][0]
                         other_slave = node_info['slaves'][-1] \
                             if len(node_info['slaves']) > 1 else None
+
                         write_data = dominated_master_info.copy()
                         del write_data['node_id']
-                        self.__zk.set(master_path, json.dumps(write_data).encode('utf-8'))
+                        master_data = json.loads(self.__zk.get(master_path)[0].decode('utf-8'))
+                        master_data.update(write_data)
+
+                        self.__zk.set(master_path, json.dumps(master_data).encode('utf-8'))
                         self.__zk.delete(os.path.join(master_path, dominated_master_info['node_id']))
                         self.overlord_task_thread.handle_dead_master(
                             dead_node_id, dominated_master_info, other_slave
@@ -320,9 +324,26 @@ class OverlordTask(threading.Thread):
 
     def handle_dead_master(self, dead_master_node_id, new_master_node_info,
                            other_slave_info):
-        # TODO: handle when master node is dead and one of it's slave node is
-        # nominate to a new master node.
-        pass
+        s = self.__context.socket(zmq.PUSH)
+        s.connect('tcp://{0}:{1}'.format(
+            new_master_node_info['ip'],
+            new_master_node_info['cmd_receive_port']))
+        s.send_multipart([b'', json.dumps({
+            'cmd': 'nominate_master',
+            'node_id': dead_master_node_id}).encode('utf-8')])
+        s.close()
+
+        s = self.__context.socket(zmq.PUSH)
+        s.connect('tcp://{0}:{1}'.format(other_slave_info['ip'],
+                                         other_slave_info['cmd_receive_port']))
+        s.send_multipart([b'', json.dumps({
+            'cmd': 'change_master',
+            'master_addr': '{0}:{1}'.format(
+                new_master_node_info['ip'],
+                new_master_node_info['push_to_slave_port']
+            )}).encode('utf-8')])
+        s.close()
+
 
 class Overlord:
     __zk_manager = None
