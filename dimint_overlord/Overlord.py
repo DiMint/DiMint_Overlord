@@ -419,30 +419,64 @@ class OverlordRebalanceTask(threading.Thread):
     def run(self):
         while True:
             a = input()
-            src_index = 0
-            target_index = 1
-            if (len(a) > 1):
-                src_index = 1
-                target_index = 0
             request = {}
             request['cmd'] = 'move_key'
             print('check node info for rebalance')
             master_info = self.__zk_manager.get_master_info_list()
+            if a == 'keys':
+                for k, v in master_info.items():
+                    print ('id: {0}, count: {1}'.format(k, len(v['stored_key'])))
+                continue
             if len(master_info) < 2:
                 continue
+            src_id, target_id = self.__select_nodes_ids(master_info)
+            if src_id == None:
+                continue
+            print('src: {0}, target: {1}'.format(src_id, target_id))
             sender = self.__context.socket(zmq.PUSH)
-            src_node = list(master_info.items())[src_index]
-            target_node = list(master_info.items())[target_index]
-            request['key_list'] = []
-            request['target_node_id'] = target_node[0]
-            request['target_node'] = 'tcp://{0}:{1}'.format(target_node[1]['ip'],
-                                                      target_node[1]['transfer_port'])
-            sender.connect('tcp://{0}:{1}'.format(src_node[1]['ip'], 
-                                            src_node[1]['cmd_receive_port']))
-            sender.send_multipart([src_node[0].encode('utf-8'), 
+            src_node = master_info[src_id]
+            target_node = master_info[target_id]
+            request['key_list'] = self.__select_move_keys(src_node['stored_key'], target_node['stored_key'])
+            request['target_node_id'] = target_id
+            request['target_node'] = 'tcp://{0}:{1}'.format(target_node['ip'],
+                                                      target_node['transfer_port'])
+            sender.connect('tcp://{0}:{1}'.format(src_node['ip'], 
+                                            src_node['cmd_receive_port']))
+            sender.send_multipart([src_id.encode('utf-8'), 
                 json.dumps(request).encode('utf-8')])
-            print('sended to {0} - {1}'.format(src_node[0], request))
+            print('Request to {0} : {1}'.format(src_id, request))
     
+    def __select_nodes_ids(self, master_info):
+        index = 0
+        src_index = 0
+        target_index = 0
+        max_count = 0
+        sorted_keys = sorted([int(m) for m in master_info.keys()])
+        for k in sorted_keys:
+            key_count = len(master_info[str(k)]['stored_key'])
+            if key_count > max_count:
+                src_index = index
+                target_index = index + 1
+                max_count = key_count
+            index += 1
+        if max_count == 0:
+            return [None, None]
+        if target_index >= len(master_info):
+            target_index = 0
+        return [str(sorted_keys[src_index]), str(sorted_keys[target_index])]
+    
+    def __select_move_keys(self, src_keys, target_keys):
+        src_hashed = []
+        target_hashed = []
+        for k in src_keys:
+            src_hashed.append((Hash.get_hashed_value(k), k))
+        src_hashed.sort(key=lambda tup: tup[0])
+        total_len = len(src_keys) + len(target_keys)
+        key_list = []
+        for i in range(int(total_len/2), len(src_keys)):
+            key_list.append(src_hashed[i][1])
+        print (key_list)
+        return key_list
 
 class Overlord:
     __zk_manager = None
