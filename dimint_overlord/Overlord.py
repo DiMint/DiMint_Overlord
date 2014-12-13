@@ -4,7 +4,7 @@ import time
 import traceback
 from hashlib import md5
 import os, random
-
+import psutil
 from kazoo.client import KazooClient
 
 config = None
@@ -23,6 +23,38 @@ class Network():
         return [(s.connect(('8.8.8.8', 80)), s.getsockname()[0], s.close())
                 for s in [socket.socket(socket.AF_INET,
                                         socket.SOCK_DGRAM)]][0][1]
+
+class OverlordStateTask(threading.Thread):
+    __zk_manager = None
+    __addr = None
+    
+    def __init__(self, zk_manager):
+        threading.Thread.__init__(self)
+        self.__zk_manager = zk_manager
+        global config
+        if not config is None:
+            port_for_client = config['port_for_client']
+            self.__addr = '{0}:{1}'.format(Network.get_ip(), port_for_client)
+
+    def run(self):
+        while True:
+            print('OverlordStateTask works')
+            if self.__zk_manager is None:
+                return
+            if not  self.__zk_manager.is_exist('/dimint/overlord/host_list/{0}'.format(self.__addr)):
+                return
+            msg = self.__zk_manager.get_node_msg('/dimint/overlord/host_list/{0}'.format(self.__addr))
+            p = psutil.Process(os.getpid())
+            msg['cwd'] = p.cwd()
+            msg['name'] = p.name()
+            msg['cmdline'] = p.cmdline()
+            msg['create_time'] = p.create_time()
+            msg['cpu_percent'] = p.cpu_percent()
+            msg['memory_percent'] = p.memory_percent()
+            msg['memory_info'] = p.memory_info()
+            msg['is_running'] = p.is_running()
+            self.__zk_manager.set_node_msg('/dimint/overlord/host_list/{0}'.format(self.__addr), msg)
+            time.sleep(10)
 
 class ZooKeeperManager():
     __zk = None
@@ -150,6 +182,15 @@ class ZooKeeperManager():
     def enable_node(self, node, enable=True):
         self.__set_master_node_attribute(node, 'enabled', enable)
 
+    def get_node_msg(self, node_path):
+        node = self.__zk.get(node_path)
+        if not node[0]:
+            return {}
+        return json.loads(node[0].decode('utf-8'))
+
+    def set_node_msg(self, node_path, msg):
+        self.__zk.set(node_path, json.dumps(msg).encode('utf-8'))
+
 class OverlordTask(threading.Thread):
     __zk_manager = None
     __nodes = []
@@ -208,6 +249,34 @@ class OverlordTask(threading.Thread):
                     sender.send_multipart([ident, msg])
                     if (cmd=='set'):
                         self.__zk_manager.add_key_to_node(master_node, request['key'])
+                sender.connect(send_addr)
+                sender.send_multipart([ident, msg])
+                if (cmd=='set'):
+                    self.__zk_manager.add_key_to_node(master_node, request['key'])
+            elif cmd == 'state':
+                response = {}
+                node_list = self.__zk_manager.get_node_list()
+                for node in node_list:
+                    msg = self.__zk_manager.get_node_msg('/dimint/node/list/{0}'.format(node))
+                    if not msg is None:
+                        msg['node_id'] = node
+                        if 'state' in response:
+                            response['state'].append(msg)
+                        else:
+                            response['state'] = [msg]
+                self.__process_response(ident, response, frontend)
+            elif cmd == 'overlord_state':
+                response = {}
+                overlord_list = self.__zk_manager.get_overlord_list()
+                for overlord_id in overlord_list:
+                    msg = self.__zk_manager.get_node_msg('/dimint/overlord/host_list/{0}'.format(overlord_id))
+                    if not msg is None:
+                        msg['overlord_id'] = overlord_id
+                        if 'overlord_state' in response:
+                            response['overlord_state'].append(msg)
+                        else:
+                            response['overlord_state'] = [msg]
+                self.__process_response(ident, response, frontend)
             else:
                 response = {}
                 response['error'] = 'DIMINT_NOT_FOUND'
@@ -285,6 +354,7 @@ class Overlord:
         self.__context = zmq.Context()
         self.overlord_task = OverlordTask(self.__zk_manager, self.__context)
         self.overlord_rebalance_task = OverlordRebalanceTask(self.__zk_manager, self.__context)
+        OverlordStateTask(self.__zk_manager).start()
 
     def run(self):
         self.overlord_task.start()

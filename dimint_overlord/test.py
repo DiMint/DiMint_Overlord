@@ -1,4 +1,5 @@
 from Overlord import Overlord
 
-overlord = Overlord()
-overlord.run()
+if __name__ == "__main__":
+    overlord = Overlord()
+    overlord.run()
