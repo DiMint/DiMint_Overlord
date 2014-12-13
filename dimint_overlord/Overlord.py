@@ -79,13 +79,15 @@ class ZooKeeperManager():
                                                master_info['cmd_receive_port'])
                 master_push_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
                                                     master_info['push_to_slave_port'])
+                master_receive_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
+                                                             master_info['receive_slave_port'])
                 self.__zk.create(os.path.join(role_path, master, node_id),
                                  json.dumps(msg).encode('utf-8'))
-                return "slave", master_addr, master_push_addr
+                return "slave", master_addr, master_push_addr, master_receive_addr
         msg['stored_key']={}
         self.__zk.create(os.path.join(role_path, node_id),
                          json.dumps(msg).encode('utf-8'))
-        return "master", None, None
+        return "master", None, None, None
 
     def select_node(self, key, select_master):
         master = str(self.__select_master_node(key))
@@ -112,7 +114,7 @@ class ZooKeeperManager():
         master_string_list = self.__zk.get_children('/dimint/node/role')
         if (len(master_string_list) == 0):
             return None
-        master_list = sorted(list(map(int, master_string_list)), key=int)
+        master_list = sorted([int(m) for m in master_string_list])
         hashed_value = Hash.get_hashed_value(key)
         for master in master_list:
             if (hashed_value <= master):
@@ -166,7 +168,7 @@ class OverlordTask(threading.Thread):
                 self.__process_request(ident, msg, frontend, backend)
             if backend in sockets:
                 result = backend.recv_multipart()
-                
+
                 self.__process_response(result[-2], result[-1], frontend, backend)
         frontend.close()
         backend.close()
@@ -214,7 +216,7 @@ class OverlordTask(threading.Thread):
         zookeeper_hosts = config.get('zookeeper_hosts')
         print('zookeeper_hosts : ' + zookeeper_hosts)
         node_id = self.__zk_manager.get_identity()
-        role, master_addr, master_push_addr = self.__zk_manager.determine_node_role(node_id, msg)
+        role, master_addr, master_push_addr, master_receive_addr = self.__zk_manager.determine_node_role(node_id, msg)
         response = {
             "node_id": node_id,
             "zookeeper_hosts": zookeeper_hosts,
@@ -222,7 +224,7 @@ class OverlordTask(threading.Thread):
         }
         if role == "slave":
             response['master_addr'] = master_push_addr
-            backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
+            response['master_receive_addr'] = master_receive_addr
 
             s = self.__context.socket(zmq.PUSH)
             s.connect(master_addr)
@@ -251,4 +253,3 @@ class Overlord:
 
     def __exit__(self, type, value, traceback):
         self.__zk_manager.stop()
-
