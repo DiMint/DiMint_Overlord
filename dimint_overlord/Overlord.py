@@ -53,6 +53,17 @@ class ZooKeeperManager():
         overlord_list = self.__zk.get_children('/dimint/overlord/host_list')
         return overlord_list if isinstance(overlord_list, list) else []
 
+    def get_master_info_list(self):
+        master_node_list = self.__zk.get_children('/dimint/node/role')
+        if not isinstance(master_node_list, list):
+            return []
+        master_info = {}
+        for master in master_node_list:
+            info = json.loads(
+                self.__zk.get('dimint/node/role/{0}'.format(master))[0].decode('utf-8'))
+            master_info[master] = info
+        return master_info
+
     def is_exist(self, path):
         return self.__zk.exists(path)
 
@@ -92,12 +103,14 @@ class ZooKeeperManager():
     def select_node(self, key, select_master):
         master = str(self.__select_master_node(key))
         if master is None:
-            return None
+            return [None, None]
         master_path = '/dimint/node/role/{0}'.format(master)
         slaves = self.__zk.get_children(master_path)
-        if (select_master or len(slaves) < 1):
-            master_info = json.loads(
+        master_info = json.loads(
                 self.__zk.get(master_path)[0].decode('utf-8'))
+        if not master_info['enabled']:
+            return [None, None]
+        if (select_master or len(slaves) < 1):
             master_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
                                                master_info['cmd_receive_port'])
             return [master, master_addr]
@@ -141,11 +154,12 @@ class OverlordTask(threading.Thread):
     __zk_manager = None
     __nodes = []
 
-    def __init__(self, zk_manager):
+    def __init__(self, zk_manager, context):
         threading.Thread.__init__(self)
         self.__zk_manager = zk_manager
         # TODO: temporary code. It must be deleted when you implement healthy check.
         self.__zk_manager.delete_all_node_role()
+        self.__context = context
 
     def run(self):
         global config
@@ -153,7 +167,6 @@ class OverlordTask(threading.Thread):
         port_for_node = config['port_for_node']
         print('port_for_client : ' + str(port_for_client))
         print('port_for_node : ' + str(port_for_node))
-        self.__context = zmq.Context()
         frontend = self.__context.socket(zmq.ROUTER)
         frontend.bind("tcp://*:%s" % port_for_client)
         backend = self.__context.socket(zmq.ROUTER)
@@ -168,7 +181,6 @@ class OverlordTask(threading.Thread):
                 self.__process_request(ident, msg, frontend, backend)
             if backend in sockets:
                 result = backend.recv_multipart()
-
                 self.__process_response(result[-2], result[-1], frontend, backend)
         frontend.close()
         backend.close()
@@ -187,10 +199,15 @@ class OverlordTask(threading.Thread):
             elif cmd == 'get' or cmd == 'set':
                 sender = self.__context.socket(zmq.PUSH)
                 master_node, send_addr = self.__zk_manager.select_node(request['key'], cmd=='set')
-                sender.connect(send_addr)
-                sender.send_multipart([ident, msg])
-                if (cmd=='set'):
-                    self.__zk_manager.add_key_to_node(master_node, request['key'])
+                if master_node is None:
+                    response = {}
+                    response['error'] = 'DIMINT_NODE_NOT_AVAILABEL'
+                    self.__process_response(ident, response, frontend)
+                else:
+                    sender.connect(send_addr)
+                    sender.send_multipart([ident, msg])
+                    if (cmd=='set'):
+                        self.__zk_manager.add_key_to_node(master_node, request['key'])
             else:
                 response = {}
                 response['error'] = 'DIMINT_NOT_FOUND'
@@ -226,12 +243,34 @@ class OverlordTask(threading.Thread):
             response['master_addr'] = master_push_addr
             response['master_receive_addr'] = master_receive_addr
 
-            s = self.__context.socket(zmq.PUSH)
-            s.connect(master_addr)
-            cmd = {'cmd': 'add_slave'}
-            s.send_multipart([ident, json.dumps(cmd).encode('utf-8')])
-        else:
-            backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
+        backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
+
+class OverlordRebalanceTask(threading.Thread):
+    def __init__(self, zk_manager, context):
+        threading.Thread.__init__(self)
+        self.__zk_manager = zk_manager
+        self.__context = context
+    
+    def run(self):
+        while True:
+            a = input()
+            request = {}
+            request['cmd'] = 'move_key'
+            print('check node info for rebalance')
+            master_info = self.__zk_manager.get_master_info_list()
+            if len(master_info) < 2:
+                continue
+            sender = self.__context.socket(zmq.PUSH)
+            src_node = list(master_info.items())[0]
+            target_node = list(master_info.items())[1]
+            request['key_list'] = []
+            request['target_node'] = 'tcp://{0}:{1}'.format(target_node[1]['ip'],
+                                                      target_node[1]['transfer_port'])
+            sender.connect('tcp://{0}:{1}'.format(src_node[1]['ip'], 
+                                            src_node[1]['cmd_receive_port']))
+            sender.send_multipart([src_node[0].encode('utf-8'), 
+                json.dumps(request).encode('utf-8')])
+            print('sended to {0} - {1}'.format(src_node[0], request))
 
 class Overlord:
     __zk_manager = None
@@ -243,10 +282,13 @@ class Overlord:
             global config
             config = json.loads(config_data.read())
         self.__zk_manager = ZooKeeperManager()
-        self.overlord_task = OverlordTask(self.__zk_manager)
+        self.__context = zmq.Context()
+        self.overlord_task = OverlordTask(self.__zk_manager, self.__context)
+        self.overlord_rebalance_task = OverlordRebalanceTask(self.__zk_manager, self.__context)
 
     def run(self):
         self.overlord_task.start()
+        self.overlord_rebalance_task.start()
 
     def __del__(self):
         self.__zk_manager.stop()
