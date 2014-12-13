@@ -69,6 +69,7 @@ class ZooKeeperManager():
         role_path = '/dimint/node/role'
         self.__zk.ensure_path(role_path)
         masters = self.__zk.get_children(role_path)
+        msg['enabled'] = True
         for master in masters:
             slaves = self.__zk.get_children(os.path.join(role_path, master))
             if len(slaves) < 2:
@@ -83,6 +84,7 @@ class ZooKeeperManager():
                 self.__zk.create(os.path.join(role_path, master, node_id),
                                  json.dumps(msg).encode('utf-8'))
                 return "slave", master_addr, master_push_addr, master_receive_addr
+        msg['stored_key']={}
         self.__zk.create(os.path.join(role_path, node_id),
                          json.dumps(msg).encode('utf-8'))
         return "master", None, None, None
@@ -98,7 +100,7 @@ class ZooKeeperManager():
                 self.__zk.get(master_path)[0].decode('utf-8'))
             master_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
                                                master_info['cmd_receive_port'])
-            return master_addr
+            return [master, master_addr]
         else:
             slave = random.choice(slaves)
             slave_path = '/dimint/node/role/{0}/{1}'.format(master, slave)
@@ -106,18 +108,34 @@ class ZooKeeperManager():
                 self.__zk.get(slave_path)[0].decode('utf-8'))
             slave_addr = 'tcp://{0}:{1}'.format(slave_info['ip'],
                                               slave_info['cmd_receive_port'])
-            return slave_addr
+            return [master, slave_addr]
 
     def __select_master_node(self, key):
         master_string_list = self.__zk.get_children('/dimint/node/role')
         if (len(master_string_list) == 0):
             return None
-        master_list = sorted([int(m) for m in master_string_list])
+        master_list = sorted(list(map(int, master_string_list)), key=int)
         hashed_value = Hash.get_hashed_value(key)
         for master in master_list:
             if (hashed_value <= master):
                 return master
         return master_list[0]
+
+    def __set_master_node_attribute(self, node, attr, value, extra=None):
+        node_path = 'dimint/node/role/{0}'.format(node)
+        node_info = json.loads(
+              self.__zk.get(node_path)[0].decode('utf-8'))
+        if extra is not None:
+            node_info[attr][value]=extra
+        else:
+            node_info[attr] = value
+        self.__zk.set(node_path, json.dumps(node_info).encode('utf-8'))
+
+    def add_key_to_node(self, node, key):
+        self.__set_master_node_attribute(node, 'stored_key', key, 0)
+
+    def enable_node(self, node, enable=True):
+        self.__set_master_node_attribute(node, 'enabled', enable)
 
 class OverlordTask(threading.Thread):
     __zk_manager = None
@@ -143,7 +161,6 @@ class OverlordTask(threading.Thread):
         poll = zmq.Poller()
         poll.register(frontend, zmq.POLLIN)
         poll.register(backend, zmq.POLLIN)
-        i=0
         while True:
             sockets = dict(poll.poll())
             if frontend in sockets:
@@ -169,9 +186,11 @@ class OverlordTask(threading.Thread):
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
                 sender = self.__context.socket(zmq.PUSH)
-                send_addr = self.__zk_manager.select_node(request['key'], cmd=='set')
+                master_node, send_addr = self.__zk_manager.select_node(request['key'], cmd=='set')
                 sender.connect(send_addr)
                 sender.send_multipart([ident, msg])
+                if (cmd=='set'):
+                    self.__zk_manager.add_key_to_node(master_node, request['key'])
             else:
                 response = {}
                 response['error'] = 'DIMINT_NOT_FOUND'
