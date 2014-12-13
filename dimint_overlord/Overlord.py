@@ -323,6 +323,11 @@ class OverlordRebalanceTask(threading.Thread):
     def run(self):
         while True:
             a = input()
+            src_index = 0
+            target_index = 1
+            if (len(a) > 1):
+                src_index = 1
+                target_index = 0
             request = {}
             request['cmd'] = 'move_key'
             print('check node info for rebalance')
@@ -330,9 +335,10 @@ class OverlordRebalanceTask(threading.Thread):
             if len(master_info) < 2:
                 continue
             sender = self.__context.socket(zmq.PUSH)
-            src_node = list(master_info.items())[0]
-            target_node = list(master_info.items())[1]
+            src_node = list(master_info.items())[src_index]
+            target_node = list(master_info.items())[target_index]
             request['key_list'] = []
+            request['target_node_id'] = target_node[0]
             request['target_node'] = 'tcp://{0}:{1}'.format(target_node[1]['ip'],
                                                       target_node[1]['transfer_port'])
             sender.connect('tcp://{0}:{1}'.format(src_node[1]['ip'], 
