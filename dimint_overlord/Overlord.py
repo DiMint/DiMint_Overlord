@@ -42,6 +42,10 @@ class ZooKeeperManager():
         if not self.is_exist(host_path):
             self.__zk.create(host_path, b'', ephemeral=True)
 
+        self.node_list = []
+        self.__zk.ensure_path('/dimint/node/list')
+        self.__zk.ChildrenWatch('/dimint/node/list', self.check_node_is_dead)
+
     def delete_all_node_role(self):
         self.__zk.delete('/dimint/node/role', recursive=True)
 
@@ -146,6 +150,70 @@ class ZooKeeperManager():
     def set_node_msg(self, node_path, msg):
         self.__zk.set(node_path, json.dumps(msg).encode('utf-8'))
 
+    def check_node_is_dead(self, node_list):
+        # this file is for exclusive lock(?) if other handler doing this job,
+        # then delete process should not be executed.
+        role_path = '/dimint/node/role'
+        handler_working_file = '/dimint/node/list/dead_node_handler_is_working'
+        dead_nodes = list(set(self.node_list) - set(node_list))
+        if len(dead_nodes) == 1 and not self.__zk.exists(handler_working_file):
+            self.__zk.create(handler_working_file, b'', ephemeral=True)
+
+            for dead_node_id in dead_nodes:
+                node_info = self.get_node_info(dead_node_id)
+                if node_info.get('role') == 'slave':
+                    # if slave node is dead, there is nothing to do.
+                    # Just update role information in zookeeper.
+                    self.__zk.delete(os.path.join(role_path,
+                                                  node_info['master_id'],
+                                                  dead_node_id))
+                else:
+                    master_path = os.path.join(role_path, dead_node_id)
+                    try:
+                        dominated_master_info = node_info['slaves'][0]
+                        other_slave = node_info['slaves'][-1] \
+                            if len(node_info['slaves']) > 1 else None
+                        write_data = dominated_master_info.copy()
+                        del write_data['node_id']
+                        self.__zk.set(master_path, json.dumps(write_data).encode('utf-8'))
+                        self.__zk.delete(os.path.join(master_path, dominated_master_info['node_id']))
+                        self.overlord_task_thread.handle_dead_master(
+                            dead_node_id, dominated_master_info, other_slave
+                        )
+                    except IndexError:
+                        # master which doesn't have slave node.
+                        # when reached in this block, data dead node stored in
+                        # will be lost.
+                        self.__zk.delete(master_path)
+                        print('Master node without slave node is dead!')
+
+            self.__zk.delete(handler_working_file)
+        self.node_list = node_list
+
+    def get_node_info(self, node_id):
+        role_path = '/dimint/node/role'
+        for master in self.__zk.get_children(role_path):
+            master_path = os.path.join(role_path, master)
+            if master == node_id:
+                result = {'role': master}
+                result.update(json.loads(
+                    self.__zk.get(master_path)[0].decode('utf-8')
+                ))
+                result['slaves'] = [dict(node_id=slave, **json.loads(
+                    self.__zk.get(os.path.join(master_path,
+                                               slave))[0].decode('utf-8')))
+                    for slave in self.__zk.get_children(master_path)]
+                return result
+            for slave in self.__zk.get_children(
+                    os.path.join(role_path, master)):
+                if slave == node_id:
+                    result = {'role': slave, 'master_id': master}
+                    result.update(json.loads(self.__zk.get(
+                        os.path.join(role_path, master))[0].decode('utf-8')))
+                    return result
+        raise Exception('Node {0} does not exist in zookeeper'.format(node_id))
+
+
 class OverlordTask(threading.Thread):
     __zk_manager = None
     __nodes = []
@@ -153,6 +221,7 @@ class OverlordTask(threading.Thread):
     def __init__(self, zk_manager):
         threading.Thread.__init__(self)
         self.__zk_manager = zk_manager
+        self.__zk_manager.overlord_task_thread = self
         # TODO: temporary code. It must be deleted when you implement healthy check.
         self.__zk_manager.delete_all_node_role()
 
@@ -248,6 +317,12 @@ class OverlordTask(threading.Thread):
             response['master_receive_addr'] = master_receive_addr
 
         backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
+
+    def handle_dead_master(self, dead_master_node_id, new_master_node_info,
+                           other_slave_info):
+        # TODO: handle when master node is dead and one of it's slave node is
+        # nominate to a new master node.
+        pass
 
 class Overlord:
     __zk_manager = None
