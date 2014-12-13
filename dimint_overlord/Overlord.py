@@ -27,7 +27,7 @@ class Network():
 class OverlordStateTask(threading.Thread):
     __zk_manager = None
     __addr = None
-    
+
     def __init__(self, zk_manager):
         threading.Thread.__init__(self)
         self.__zk_manager = zk_manager
@@ -108,7 +108,7 @@ class ZooKeeperManager():
         msg['enabled'] = True
         for master in masters:
             slaves = self.__zk.get_children(os.path.join(role_path, master))
-            if len(slaves) < 2:
+            if len(slaves) < max(1, config.get('max_slave_count', 2)):
                 master_info = json.loads(
                     self.__zk.get(os.path.join(role_path, master))[0].decode('utf-8'))
                 master_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
