@@ -14,8 +14,10 @@ class Hash():
     def get_hashed_value(key):
         global config
         hash_range = config.get('hash_range')
-        print('hash_range : ' + str(hash_range))
         return int(md5(str(key).encode('utf-8')).hexdigest(), 16) % hash_range
+    @staticmethod
+    def get_node_id():
+        return md5(str(time.time()).encode('utf-8')).hexdigest()
 
 class Network():
     @staticmethod
@@ -108,9 +110,16 @@ class ZooKeeperManager():
 
     def get_identity(self):
         while True:
-            hash_value = Hash.get_hashed_value(time.time())
+            hash_value = Hash.get_node_id()
             if not (self.__zk.exists('/dimint/node/list/{0}'.format(hash_value))):
                 return str(hash_value)
+
+    def get_node_value(self):
+        master_info = self.get_master_info_list()
+        value_list = [m['value'] for m in master_info]
+        while True:
+
+        
 
     def determine_node_role(self, node_id, msg):
         role_path = '/dimint/node/role'
@@ -315,7 +324,7 @@ class OverlordTask(threading.Thread):
                 master_node, send_addr = self.__zk_manager.select_node(request['key'], cmd=='set')
                 if master_node is None:
                     response = {}
-                    response['error'] = 'DIMINT_NODE_NOT_AVAILABEL'
+                    response['error'] = 'DIMINT_NODE_NOT_AVAILABLE'
                     self.__process_response(ident, response, frontend)
                 else:
                     sender.connect(send_addr)
@@ -367,6 +376,9 @@ class OverlordTask(threading.Thread):
 
         if msg.get('cmd') == 'connect' and backend is not None:
             self.add_node(ident, msg, backend)
+        elif msg.get('cmd') == 'move_key' and backend is not None:
+            self.__zk_manager.enable_node(msg.get('src_id'))
+            self.__zk_manager.enable_node(msg.get('target_id'))
         else:
             frontend.send_multipart([ident, response])
 
@@ -425,7 +437,7 @@ class OverlordRebalanceTask(threading.Thread):
             master_info = self.__zk_manager.get_master_info_list()
             if a == 'keys':
                 for k, v in master_info.items():
-                    print ('id: {0}, count: {1}'.format(k, len(v['stored_key'])))
+                    print ('id: {0}, count: {1}, keys: {2}'.format(k, len(v['stored_key']), v['stored_key']))
                 continue
             if len(master_info) < 2:
                 continue
@@ -433,6 +445,8 @@ class OverlordRebalanceTask(threading.Thread):
             if src_id == None:
                 continue
             print('src: {0}, target: {1}'.format(src_id, target_id))
+            self.__zk_manager.enable_node(src_id, False)
+            self.__zk_manager.enable_node(target_id, False)
             sender = self.__context.socket(zmq.PUSH)
             src_node = master_info[src_id]
             target_node = master_info[target_id]
