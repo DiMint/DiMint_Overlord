@@ -3,3 +3,4 @@
 
 kazoo==2.0
 pyzmq==14.0
+psutil==2.1.3
