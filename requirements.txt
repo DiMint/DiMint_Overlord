@@ -1,6 +1,0 @@
-# This is an implicit value, here for clarity
---index-url https://pypi.python.org/simple/
-
-kazoo==2.0
-pyzmq==14.0
-psutil==2.1.3
