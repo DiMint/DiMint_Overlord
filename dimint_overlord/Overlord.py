@@ -124,7 +124,7 @@ class ZooKeeperManager():
             if not hash_value in value_list:
                 return hash_value
 
-    def determine_node_role(self, node_id, node_value, msg):
+    def determine_node_role(self, node_id, node_value, msg, enable):
         role_path = '/dimint/node/role'
         self.__zk.ensure_path(role_path)
         masters = self.__zk.get_children(role_path)
@@ -145,6 +145,7 @@ class ZooKeeperManager():
                                  json.dumps(msg).encode('utf-8'))
                 return "slave", master_addr, master_push_addr, master_receive_addr
         msg['stored_key']=[]
+        msg['enabled'] = enable
         self.__zk.create(os.path.join(role_path, node_id),
                          json.dumps(msg).encode('utf-8'))
         return "master", None, None, None
@@ -421,8 +422,14 @@ class OverlordTask(threading.Thread):
         zookeeper_hosts = config.get('zookeeper_hosts')
         print('zookeeper_hosts : ' + zookeeper_hosts)
         node_id = self.__zk_manager.get_identity()
-        node_value = self.__zk_manager.get_node_value()
-        role, master_addr, master_push_addr, master_receive_addr = self.__zk_manager.determine_node_role(node_id, node_value, msg)
+        rebalance_request = self.__get_rebalance_info(
+            node_id, 'tcp://{0}:{1}'.format(msg['ip'], msg['transfer_port']))
+        if rebalance_request is None:
+            node_value = self.__zk_manager.get_node_value()
+        else:
+            node_value = rebalance_request['ori_src_value']
+        role, master_addr, master_push_addr, master_receive_addr = self.__zk_manager.determine_node_role(
+            node_id, node_value, msg, rebalance_request is None)
         response = {
             "node_id": node_id,
             "value": node_value,
@@ -434,6 +441,15 @@ class OverlordTask(threading.Thread):
             response['master_receive_addr'] = master_receive_addr
 
         backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
+        
+        if role == "master" and rebalance_request is not None:
+            src_id = rebalance_request['src_node_id']
+            self.__zk_manager.enable_node(src_id, False)
+            sender = self.__context.socket(zmq.PUSH)
+            sender.connect(rebalance_request['src_node'])
+            sender.send_multipart([src_id.encode('utf-8'),
+                json.dumps(rebalance_request).encode('utf-8')])
+            print('Rebalance Request to {0} : {1}'.format(src_id, rebalance_request))
 
     def handle_dead_master(self, dead_master_node_id, new_master_node_info,
                            other_slaves_info):
@@ -458,6 +474,33 @@ class OverlordTask(threading.Thread):
                 )}).encode('utf-8')])
             s.close()
 
+    def __get_rebalance_info(self, target_node_id, target_node_addr):
+        while True:
+            master_info = self.__zk_manager.get_master_info_list()
+            if len(master_info) == 0:
+                return None
+            enabled_masters = list(filter(lambda x: master_info[x]['enabled'], master_info.keys()))
+            if len(enabled_masters) == 0:
+                print("add node : waiting for enabled node...")
+                time.sleep(2)
+                continue
+            src_node_id = max(enabled_masters , key=lambda x: len(master_info[x]['stored_key']))
+            src_keys = master_info[src_node_id]['stored_key']
+            if len(src_keys) == 0:
+                return None
+            src_value = master_info[src_node_id]['value']
+            move_key_list, new_value = OverlordRebalanceTask.select_move_keys(src_keys, [], src_value, src_value)            
+            request = {}
+            request['cmd'] = 'move_key'
+            request['key_list'] = move_key_list
+            request['new_src_value'] = new_value
+            request['src_node_id'] = src_node_id
+            request['target_node_id'] = target_node_id
+            request['ori_src_value'] = src_value
+            request['target_node'] = target_node_addr
+            request['src_node'] = 'tcp://{0}:{1}'.format(
+                master_info[src_node_id]['ip'], master_info[src_node_id]['cmd_receive_port'])
+            return request
 
 class OverlordRebalanceTask(threading.Thread):
     def __init__(self, zk_manager, context):
@@ -474,12 +517,6 @@ class OverlordRebalanceTask(threading.Thread):
             request['cmd'] = 'move_key'
             print('check node info for rebalance')
             master_info = self.__zk_manager.get_master_info_list()
-            '''
-            if a == 'keys':
-                for k, v in master_info.items():
-                    print ('id: {0}, value: {3}, count: {1}, keys: {2}'.format(k, len(v['stored_key']), v['stored_key'], v['value']))
-                continue
-            '''
             for k, v in master_info.items():
                 print ('id: {0}, value: {3}, count: {1}, keys: {2}'.format(k, len(v['stored_key']), v['stored_key'], v['value']))
             
@@ -494,13 +531,14 @@ class OverlordRebalanceTask(threading.Thread):
             print('src: {0}, target: {1}'.format(src_id, target_id))
             if not master_info[src_id]['enabled'] or not master_info[target_id]['enabled']:
                 print ('node is disabled')
+                time.sleep(5)
                 continue
             self.__zk_manager.enable_node(src_id, False)
             self.__zk_manager.enable_node(target_id, False)
             sender = self.__context.socket(zmq.PUSH)
             src_node = master_info[src_id]
             target_node = master_info[target_id]
-            request['key_list'], request['new_src_value'] = self.__select_move_keys(
+            request['key_list'], request['new_src_value'] = self.select_move_keys(
                 src_node['stored_key'], target_node['stored_key'],
                 src_node['value'], target_node['value'])
             request['target_node_id'] = target_id
@@ -538,7 +576,8 @@ class OverlordRebalanceTask(threading.Thread):
 
         return [str(sorted_keys[src_index][0]), str(sorted_keys[target_index][0])]
 
-    def __select_move_keys(self, src_keys, target_keys, src_value, target_value):
+    @staticmethod
+    def select_move_keys(src_keys, target_keys, src_value, target_value):
         src_hashed = []
         target_hashed = []
         for k in src_keys:
@@ -550,7 +589,7 @@ class OverlordRebalanceTask(threading.Thread):
         total_len = len(src_keys) + len(target_keys)
         key_list = []
 
-        if src_value < target_value and max([k[0] for k in src_hashed]) > target_value:
+        if src_value <= target_value and max([k[0] for k in src_hashed]) > target_value:
             lowers = [k for k in src_hashed if k[0] <= src_value] 
             for i in range(int(total_len/2), len(src_keys)):
                 offset = (len(lowers) + i) % len(src_keys)
@@ -560,7 +599,7 @@ class OverlordRebalanceTask(threading.Thread):
                 key_list.append(src_hashed[i][1])
 
         offset = total_len // 2 - (((total_len % 2) + 1) % 2) - 1
-        if src_value < target_value and max([k[0] for k in src_hashed]) > target_value:
+        if src_value <= target_value and max([k[0] for k in src_hashed]) > target_value:
             uppers = [k for k in src_hashed if k[0] > src_value]
             if len(uppers) <= offset:
                 new_offset = offset - len(uppers)
