@@ -6,14 +6,14 @@ from hashlib import md5
 import os, random
 import psutil
 from kazoo.client import KazooClient
-
-config = None
+import sys
+import getopt
+import signal
+from multiprocessing import Process
 
 class Hash():
     @staticmethod
-    def get_hashed_value(key):
-        global config
-        hash_range = config.get('hash_range')
+    def get_hashed_value(key, hash_range):
         return int(md5(str(key).encode('utf-8')).hexdigest(), 16) % hash_range
     @staticmethod
     def get_node_id():
@@ -30,13 +30,10 @@ class OverlordStateTask(threading.Thread):
     __zk_manager = None
     __addr = None
 
-    def __init__(self, zk_manager):
+    def __init__(self, zk_manager, port_for_client):
         threading.Thread.__init__(self)
         self.__zk_manager = zk_manager
-        global config
-        if not config is None:
-            port_for_client = config['port_for_client']
-            self.__addr = '{0}:{1}'.format(Network.get_ip(), port_for_client)
+        self.__addr = '{0}:{1}'.format(Network.get_ip(), port_for_client)
 
     def run(self):
         while True:
@@ -60,13 +57,10 @@ class OverlordStateTask(threading.Thread):
 
 class ZooKeeperManager():
     __zk = None
+    __hash_range = None
+    __max_slave_count = None
 
-    def __init__(self):
-        global config
-        zookeeper_hosts = config.get('zookeeper_hosts', '127.0.0.1:2181')
-        port_for_client = config['port_for_client']
-        print('zookeeper_hosts : ' + zookeeper_hosts)
-        print('port_for_client : ' + str(port_for_client))
+    def __init__(self, zookeeper_hosts, port_for_client, hash_range, max_slave_count):
         self.__zk = KazooClient(zookeeper_hosts)
         self.__zk.start()
         self.__zk.ensure_path('/dimint/overlord/host_list')
@@ -79,6 +73,8 @@ class ZooKeeperManager():
         self.node_list = []
         self.__zk.ensure_path('/dimint/node/list')
         self.__zk.ChildrenWatch('/dimint/node/list', self.check_node_is_dead)
+        self.__hash_range = hash_range
+        self.__max_slave_count = max_slave_count
 
     def delete_all_node_role(self):
         self.__zk.delete('/dimint/node/role', recursive=True)
@@ -120,7 +116,7 @@ class ZooKeeperManager():
         master_info = self.get_master_info_list()
         value_list = [m['value'] for m in master_info.values()]
         while True:
-            hash_value = Hash.get_hashed_value(time.time())
+            hash_value = Hash.get_hashed_value(time.time(), self.__hash_range)
             if not hash_value in value_list:
                 return hash_value
 
@@ -132,7 +128,7 @@ class ZooKeeperManager():
         msg['value'] = node_value
         for master in masters:
             slaves = self.__zk.get_children(os.path.join(role_path, master))
-            if len(slaves) < max(1, config.get('max_slave_count', 2)):
+            if len(slaves) < max(1, self.__max_slave_count):
                 master_info = json.loads(
                     self.__zk.get(os.path.join(role_path, master))[0].decode('utf-8'))
                 master_addr = 'tcp://{0}:{1}'.format(master_info['ip'],
@@ -178,7 +174,7 @@ class ZooKeeperManager():
         if (len(master_info_list) == 0):
             return None
         master_list = sorted(list(master_info_list.items()), key=lambda tup : int(tup[1]['value']))
-        hashed_value = Hash.get_hashed_value(key)
+        hashed_value = Hash.get_hashed_value(key, self.__hash_range)
         for master in master_list:
             if (hashed_value <= int(master[1]['value'])):
                 return master[0]
@@ -288,7 +284,7 @@ class ZooKeeperManager():
         for master in self.__zk.get_children(role_path):
             master_path = os.path.join(role_path, master)
             if master == node_id:
-                result = {'role': master}
+                result = {'role': 'master'}
                 result.update(json.loads(
                     self.__zk.get(master_path)[0].decode('utf-8')
                 ))
@@ -300,7 +296,7 @@ class ZooKeeperManager():
             for slave in self.__zk.get_children(
                     os.path.join(role_path, master)):
                 if slave == node_id:
-                    result = {'role': slave, 'master_id': master}
+                    result = {'role': 'slave', 'master_id': master}
                     result.update(json.loads(self.__zk.get(
                         os.path.join(role_path, master))[0].decode('utf-8')))
                     return result
@@ -309,26 +305,27 @@ class ZooKeeperManager():
 
 class OverlordTask(threading.Thread):
     __zk_manager = None
-    __nodes = []
+    __port_for_client = None
+    __port_for_node = None
+    __zookeeper_hosts = None
 
-    def __init__(self, zk_manager, context):
+    def __init__(self, zk_manager, context, port_for_client, port_for_node, zookeeper_hosts, hash_range):
         threading.Thread.__init__(self)
         self.__zk_manager = zk_manager
         self.__zk_manager.overlord_task_thread = self
         # TODO: temporary code. It must be deleted when you implement healthy check.
         self.__zk_manager.delete_all_node_role()
         self.__context = context
+        self.__port_for_client = port_for_client
+        self.__port_for_node = port_for_node
+        self.__zookeeper_hosts = zookeeper_hosts
+        self.__hash_range = hash_range
 
     def run(self):
-        global config
-        port_for_client = config['port_for_client']
-        port_for_node = config['port_for_node']
-        print('port_for_client : ' + str(port_for_client))
-        print('port_for_node : ' + str(port_for_node))
         frontend = self.__context.socket(zmq.ROUTER)
-        frontend.bind("tcp://*:%s" % port_for_client)
+        frontend.bind("tcp://*:%s" % self.__port_for_client)
         backend = self.__context.socket(zmq.ROUTER)
-        backend.bind("tcp://*:%s" % port_for_node)
+        backend.bind("tcp://*:%s" % self.__port_for_node)
         poll = zmq.Poller()
         poll.register(frontend, zmq.POLLIN)
         poll.register(backend, zmq.POLLIN)
@@ -371,8 +368,12 @@ class OverlordTask(threading.Thread):
                 node_list = self.__zk_manager.get_node_list()
                 for node in node_list:
                     msg = self.__zk_manager.get_node_msg('/dimint/node/list/{0}'.format(node))
+                    info = self.__zk_manager.get_node_info(node)
                     if not msg is None:
                         msg['node_id'] = node
+                        msg['role'] = info['role']
+                        if msg['role'] == 'slave':
+                            msg['master_node_id'] = info['master_id']
                         if 'state' in response:
                             response['state'].append(msg)
                         else:
@@ -418,9 +419,6 @@ class OverlordTask(threading.Thread):
             frontend.send_multipart([ident, response])
 
     def add_node(self, ident, msg, backend):
-        global config
-        zookeeper_hosts = config.get('zookeeper_hosts')
-        print('zookeeper_hosts : ' + zookeeper_hosts)
         node_id = self.__zk_manager.get_identity()
         rebalance_request = self.__get_rebalance_info(
             node_id, 'tcp://{0}:{1}'.format(msg['ip'], msg['transfer_port']))
@@ -433,7 +431,7 @@ class OverlordTask(threading.Thread):
         response = {
             "node_id": node_id,
             "value": node_value,
-            "zookeeper_hosts": zookeeper_hosts,
+            "zookeeper_hosts": self.__zookeeper_hosts,
             "role": role,
         }
         if role == "slave":
@@ -489,7 +487,7 @@ class OverlordTask(threading.Thread):
             if len(src_keys) == 0:
                 return None
             src_value = master_info[src_node_id]['value']
-            move_key_list, new_value = OverlordRebalanceTask.select_move_keys(src_keys, [], src_value, src_value)            
+            move_key_list, new_value = OverlordRebalanceTask.select_move_keys(src_keys, [], src_value, src_value, self.__hash_range)            
             request = {}
             request['cmd'] = 'move_key'
             request['key_list'] = move_key_list
@@ -503,10 +501,13 @@ class OverlordTask(threading.Thread):
             return request
 
 class OverlordRebalanceTask(threading.Thread):
-    def __init__(self, zk_manager, context):
+    __hash_range = None
+
+    def __init__(self, zk_manager, context, hash_range):
         threading.Thread.__init__(self)
         self.__zk_manager = zk_manager
         self.__context = context
+        self.__hash_range = hash_range
         self.__rebalancing = False
 
     def run(self):
@@ -540,7 +541,7 @@ class OverlordRebalanceTask(threading.Thread):
             target_node = master_info[target_id]
             request['key_list'], request['new_src_value'] = self.select_move_keys(
                 src_node['stored_key'], target_node['stored_key'],
-                src_node['value'], target_node['value'])
+                src_node['value'], target_node['value'], self.__hash_range)
             request['target_node_id'] = target_id
             request['target_node'] = 'tcp://{0}:{1}'.format(target_node['ip'],
                                                       target_node['transfer_port'])
@@ -577,13 +578,13 @@ class OverlordRebalanceTask(threading.Thread):
         return [str(sorted_keys[src_index][0]), str(sorted_keys[target_index][0])]
 
     @staticmethod
-    def select_move_keys(src_keys, target_keys, src_value, target_value):
+    def select_move_keys(src_keys, target_keys, src_value, target_value, hash_range):
         src_hashed = []
         target_hashed = []
         for k in src_keys:
-            src_hashed.append((Hash.get_hashed_value(k), k))
+            src_hashed.append((Hash.get_hashed_value(k, hash_range), k))
         for k in target_keys:
-            target_hashed.append((Hash.get_hashed_value(k), k))
+            target_hashed.append((Hash.get_hashed_value(k, hash_range), k))
 
         src_hashed.sort(key=lambda tup: tup[0])
         total_len = len(src_keys) + len(target_keys)
@@ -613,27 +614,76 @@ class OverlordRebalanceTask(threading.Thread):
         print (src_hashed)
         return key_list, new_value
 
+def handler(self, signum, frame):
+    try:
+        print('Signal handler called with signal', signum)
+    except:
+        print('asdf')
+
 class Overlord:
-    __zk_manager = None
+    __overlord_task = None
+    __overlord_rebalance_task = None
+    __overlord_state_task = None
 
-    def __init__(self, config_path=""):
-        if (config_path == ""):
-            config_path = './dimint_server.config'
-        with open(config_path, 'r') as config_data:
-            global config
-            config = json.loads(config_data.read())
-        self.__zk_manager = ZooKeeperManager()
-        self.__context = zmq.Context()
-        self.overlord_task = OverlordTask(self.__zk_manager, self.__context)
-        self.overlord_rebalance_task = OverlordRebalanceTask(self.__zk_manager, self.__context)
-        OverlordStateTask(self.__zk_manager).start()
+    def __init__(self):
+        pass
 
-    def run(self):
-        self.overlord_task.start()
-        self.overlord_rebalance_task.start()
+    def start_overlord(self, config_path, port_for_client, port_for_node, zookeeper_hosts, hash_range, max_slave_count):
+        if not config_path is None:
+            with open(config_path, 'r') as config_stream:
+                config = json.loads(config_stream.read())
+        else:
+            config = {}
+        if not port_for_client is None:
+            config['port_for_client'] = port_for_client
+        if not port_for_node is None:
+            config['port_for_node'] = port_for_node
+        if not zookeeper_hosts is None:
+            config['zookeeper_hosts'] = zookeeper_hosts
+        if not hash_range is None:
+            config['hash_range'] = hash_range
+        if not max_slave_count is None:
+            config['max_slave_count'] = max_slave_count
+        signal.signal(signal.SIGUSR1, handler)
+        zk_manager = ZooKeeperManager(config['zookeeper_hosts'], config['port_for_client'], config['hash_range'], config['max_slave_count'])
+        context = zmq.Context()
+        self.__overlord_task = OverlordTask(zk_manager, context, config['port_for_client'], config['port_for_node'], config['zookeeper_hosts'], config['hash_range'])
+        self.__overlord_rebalance_task = OverlordRebalanceTask(zk_manager, context, config['hash_range'])
+        self.__overlord_state_task = OverlordStateTask(zk_manager, config['port_for_client'])
+        self.__overlord_task.start()
+        self.__overlord_rebalance_task.start()
+        self.__overlord_state_task.start()
 
-    def __del__(self):
-        self.__zk_manager.stop()
+def main(argv = sys.argv[1:]):
+    try:
+        opts, args = getopt.getopt(argv, '', ['help', 'config_path=', 'port_for_client=', 'port_for_node=', 'zookeeper_hosts=', 'hash_range=', 'max_slave_count='])
+    except getopt.GetoptError as e:
+        sys.exit(2)
+    config_path = os.path.join(os.path.dirname(__file__), 'dimint_overlord.config')
+    port_for_client = None
+    port_for_node = None
+    zookeeper_hosts = None
+    hash_range = None
+    max_slave_count = None
+    for opt, arg in opts:
+        if opt == '--help':
+            print('dimint_overlord.py --config_path=config_path --port_for_client=port_for_client --port_for_node=port_for_node --zookeeper_hosts=zookeeper_hosts --hash_range=hash_range --max_slave_count=max_slave_count')
+            sys.exit(0)
+        elif opt == '--config_path':
+            config_path = arg
+        elif opt == '--port_for_client':
+            port_for_client = arg
+        elif opt == '--port_for_node':
+            port_for_node = arg
+        elif opt == '--zookeeper_hosts':
+            zookeeper_hosts = arg
+        elif opt == '--hash_range':
+            hash_range = arg
+        elif opt == '--max_slave_count':
+            max_slave_count = arg
+    overlord = Overlord()
+    overlord.start_overlord(config_path, port_for_client, port_for_node, zookeeper_hosts, hash_range, max_slave_count)
+    sys.exit(0)
 
-    def __exit__(self, type, value, traceback):
-        self.__zk_manager.stop()
+if __name__ == "__main__":
+    main()
