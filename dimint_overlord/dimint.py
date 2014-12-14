@@ -32,7 +32,7 @@ def main():
             print_dimint_overlord_help()
         elif sys.argv[2] == 'list':
             for p in psutil.process_iter():
-                if p.name() == 'python':
+                if p.name() in ['python', 'dimint', 'dimint_overlord']:
                     print('{0}, cmdline : {1}'.format(p, p.cmdline()))
         elif sys.argv[2] == 'start':
             newpid = os.fork()

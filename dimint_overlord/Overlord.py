@@ -624,7 +624,7 @@ def main(argv = sys.argv[1:]):
     for opt, arg in opts:
         if opt == '--help':
             print('dimint_overlord.py --config_path=config_path --port_for_client=port_for_client --port_for_node=port_for_node --zookeeper_hosts=zookeeper_hosts --hash_range=hash_range --max_slave_count=max_slave_count')
-            sys.exit()
+            sys.exit(0)
         elif opt == '--config_path':
             config_path = arg
         elif opt == '--port_for_client':
@@ -639,7 +639,7 @@ def main(argv = sys.argv[1:]):
             max_slave_count = arg
     overlord = Overlord()
     overlord.start_overlord(config_path, port_for_client, port_for_node, zookeeper_hosts, hash_range, max_slave_count)
-    sys.exit()
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
