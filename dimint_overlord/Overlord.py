@@ -355,8 +355,7 @@ class OverlordTask(threading.Thread):
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
                 sender = self.__context.socket(zmq.PUSH)
-                #master_node, send_addr = self.__zk_manager.select_node(request['key'], cmd=='set')
-                master_node, send_addr = self.__zk_manager.select_node(request['key'], True)
+                master_node, send_addr = self.__zk_manager.select_node(request['key'], cmd=='set')
                 if master_node is None:
                     response = {}
                     response['error'] = 'DIMINT_NODE_NOT_AVAILABLE'
@@ -465,24 +464,37 @@ class OverlordRebalanceTask(threading.Thread):
         threading.Thread.__init__(self)
         self.__zk_manager = zk_manager
         self.__context = context
+        self.__rebalancing = False
 
     def run(self):
         while True:
-            a = input()
+            if not self.__rebalancing:
+                time.sleep(10)
             request = {}
             request['cmd'] = 'move_key'
             print('check node info for rebalance')
             master_info = self.__zk_manager.get_master_info_list()
+            '''
             if a == 'keys':
                 for k, v in master_info.items():
                     print ('id: {0}, value: {3}, count: {1}, keys: {2}'.format(k, len(v['stored_key']), v['stored_key'], v['value']))
                 continue
+            '''
+            for k, v in master_info.items():
+                print ('id: {0}, value: {3}, count: {1}, keys: {2}'.format(k, len(v['stored_key']), v['stored_key'], v['value']))
+            
             if len(master_info) < 2:
+                self.__rebalancing = False
                 continue
             src_id, target_id = self.__select_nodes_ids(master_info)
             if src_id == None:
+                self.__rebalancing = False
                 continue
+            self.__rebalancing = True
             print('src: {0}, target: {1}'.format(src_id, target_id))
+            if not master_info[src_id]['enabled'] or not master_info[target_id]['enabled']:
+                print ('node is disabled')
+                continue
             self.__zk_manager.enable_node(src_id, False)
             self.__zk_manager.enable_node(target_id, False)
             sender = self.__context.socket(zmq.PUSH)
@@ -504,19 +516,26 @@ class OverlordRebalanceTask(threading.Thread):
         index = 0
         src_index = 0
         target_index = 0
-        max_count = 0
+        max_gap = 0
         sorted_keys = sorted([(m, int(v['value'])) for m, v in master_info.items()], key=lambda x: x[1])
-        for node_id, k in sorted_keys:
-            key_count = len(master_info[node_id]['stored_key'])
-            if key_count > max_count:
-                src_index = index
-                target_index = index + 1
-                max_count = key_count
-            index += 1
-        if max_count == 0:
+        max_key_len = len(max(master_info.values(), key=lambda x: len(x['stored_key']))['stored_key'])
+        min_key_len = len(min(master_info.values(), key=lambda x: len(x['stored_key']))['stored_key'])
+        print('max_stored_key : {0}, min_stored_key : {1}'.format(max_key_len, min_key_len))
+        if (max_key_len <= 2*min_key_len):
             return [None, None]
-        if target_index >= len(master_info):
-            target_index = 0
+
+        for i in range(len(sorted_keys)):
+            s = i
+            t = (i+1) % len(sorted_keys)
+            gap = len(master_info[sorted_keys[s][0]]['stored_key']) - len(master_info[sorted_keys[t][0]]['stored_key']) 
+            if gap > max_gap:
+                src_index = s
+                target_index = t
+                max_gap = gap
+        
+        if max_gap == 0:
+            return [None, None]
+
         return [str(sorted_keys[src_index][0]), str(sorted_keys[target_index][0])]
 
     def __select_move_keys(self, src_keys, target_keys, src_value, target_value):
