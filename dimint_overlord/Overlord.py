@@ -283,7 +283,7 @@ class ZooKeeperManager():
         for master in self.__zk.get_children(role_path):
             master_path = os.path.join(role_path, master)
             if master == node_id:
-                result = {'role': master}
+                result = {'role': 'master'}
                 result.update(json.loads(
                     self.__zk.get(master_path)[0].decode('utf-8')
                 ))
@@ -295,7 +295,7 @@ class ZooKeeperManager():
             for slave in self.__zk.get_children(
                     os.path.join(role_path, master)):
                 if slave == node_id:
-                    result = {'role': slave, 'master_id': master}
+                    result = {'role': 'slave', 'master_id': master}
                     result.update(json.loads(self.__zk.get(
                         os.path.join(role_path, master))[0].decode('utf-8')))
                     return result
@@ -366,8 +366,12 @@ class OverlordTask(threading.Thread):
                 node_list = self.__zk_manager.get_node_list()
                 for node in node_list:
                     msg = self.__zk_manager.get_node_msg('/dimint/node/list/{0}'.format(node))
+                    info = self.__zk_manager.get_node_info(node)
                     if not msg is None:
                         msg['node_id'] = node
+                        msg['role'] = info['role']
+                        if msg['role'] == 'slave':
+                            msg['master_node_id'] = info['master_id']
                         if 'state' in response:
                             response['state'].append(msg)
                         else:
@@ -547,7 +551,7 @@ class OverlordRebalanceTask(threading.Thread):
         key_list = []
 
         if src_value < target_value and max([k[0] for k in src_hashed]) > target_value:
-            lowers = [k for k in src_hashed if k[0] <= src_value] 
+            lowers = [k for k in src_hashed if k[0] <= src_value]
             for i in range(int(total_len/2), len(src_keys)):
                 offset = (len(lowers) + i) % len(src_keys)
                 key_list.append(src_hashed[offset][1])
