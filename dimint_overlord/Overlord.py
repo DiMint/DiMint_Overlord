@@ -203,8 +203,7 @@ class ZooKeeperManager():
                     master_path = os.path.join(role_path, dead_node_id)
                     try:
                         dominated_master_info = node_info['slaves'][0]
-                        other_slave = node_info['slaves'][-1] \
-                            if len(node_info['slaves']) > 1 else None
+                        other_slaves = node_info['slaves'][1:]
 
                         write_data = dominated_master_info.copy()
                         del write_data['node_id']
@@ -214,7 +213,7 @@ class ZooKeeperManager():
                         self.__zk.set(master_path, json.dumps(master_data).encode('utf-8'))
                         self.__zk.delete(os.path.join(master_path, dominated_master_info['node_id']))
                         self.overlord_task_thread.handle_dead_master(
-                            dead_node_id, dominated_master_info, other_slave
+                            dead_node_id, dominated_master_info, other_slaves
                         )
                     except IndexError:
                         # master which doesn't have slave node.
@@ -367,7 +366,7 @@ class OverlordTask(threading.Thread):
         backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
 
     def handle_dead_master(self, dead_master_node_id, new_master_node_info,
-                           other_slave_info):
+                           other_slaves_info):
         s = self.__context.socket(zmq.PUSH)
         s.connect('tcp://{0}:{1}'.format(
             new_master_node_info['ip'],
@@ -377,16 +376,17 @@ class OverlordTask(threading.Thread):
             'node_id': dead_master_node_id}).encode('utf-8')])
         s.close()
 
-        s = self.__context.socket(zmq.PUSH)
-        s.connect('tcp://{0}:{1}'.format(other_slave_info['ip'],
-                                         other_slave_info['cmd_receive_port']))
-        s.send_multipart([b'', json.dumps({
-            'cmd': 'change_master',
-            'master_addr': '{0}:{1}'.format(
-                new_master_node_info['ip'],
-                new_master_node_info['push_to_slave_port']
-            )}).encode('utf-8')])
-        s.close()
+        for other_slave_info in other_slaves_info:
+            s = self.__context.socket(zmq.PUSH)
+            s.connect('tcp://{0}:{1}'.format(
+                other_slave_info['ip'], other_slave_info['cmd_receive_port']))
+            s.send_multipart([b'', json.dumps({
+                'cmd': 'change_master',
+                'master_addr': '{0}:{1}'.format(
+                    new_master_node_info['ip'],
+                    new_master_node_info['push_to_slave_port']
+                )}).encode('utf-8')])
+            s.close()
 
 
 class Overlord:
