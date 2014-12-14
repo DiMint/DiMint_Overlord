@@ -203,7 +203,7 @@ class ZooKeeperManager():
         node_info['stored_key'] += key_list
         node_info['stored_key'] = list(set(node_info['stored_key']))
         self.__zk.set(node_path, json.dumps(node_info).encode('utf-8'))
-      
+
     def remove_key_list_from_node(self, node, key_list):
         node_path = 'dimint/node/role/{0}'.format(node)
         node_info = json.loads(
@@ -211,7 +211,7 @@ class ZooKeeperManager():
         node_info['stored_key'] = list(set(node_info['stored_key']) - set(key_list))
 
         self.__zk.set(node_path, json.dumps(node_info).encode('utf-8'))
- 
+
     def enable_node(self, node, enable=True):
         self.__set_master_node_attribute(node, 'enabled', enable)
 
@@ -252,11 +252,23 @@ class ZooKeeperManager():
 
                         write_data = dominated_master_info.copy()
                         del write_data['node_id']
+                        del write_data['value']
                         master_data = json.loads(self.__zk.get(master_path)[0].decode('utf-8'))
                         master_data.update(write_data)
 
-                        self.__zk.set(master_path, json.dumps(master_data).encode('utf-8'))
-                        self.__zk.delete(os.path.join(master_path, dominated_master_info['node_id']))
+                        self.__zk.create(os.path.join(role_path, dominated_master_info['node_id']),
+                                         json.dumps(master_data).encode('utf-8'))
+
+                        for other_slave in other_slaves:
+                            other_slave_id = other_slave['node_id']
+                            del other_slave['node_id']
+                            self.__zk.create(
+                                os.path.join(role_path,
+                                             dominated_master_info['node_id'],
+                                             other_slave_id),
+                                json.dumps(other_slave).encode('utf-8'))
+
+                        self.__zk.delete(master_path, recursive=True)
                         self.overlord_task_thread.handle_dead_master(
                             dead_node_id, dominated_master_info, other_slaves
                         )
@@ -453,7 +465,7 @@ class OverlordRebalanceTask(threading.Thread):
         threading.Thread.__init__(self)
         self.__zk_manager = zk_manager
         self.__context = context
-    
+
     def run(self):
         while True:
             a = input()
@@ -482,12 +494,12 @@ class OverlordRebalanceTask(threading.Thread):
             request['target_node_id'] = target_id
             request['target_node'] = 'tcp://{0}:{1}'.format(target_node['ip'],
                                                       target_node['transfer_port'])
-            sender.connect('tcp://{0}:{1}'.format(src_node['ip'], 
+            sender.connect('tcp://{0}:{1}'.format(src_node['ip'],
                                             src_node['cmd_receive_port']))
-            sender.send_multipart([src_id.encode('utf-8'), 
+            sender.send_multipart([src_id.encode('utf-8'),
                 json.dumps(request).encode('utf-8')])
             print('Request to {0} : {1}'.format(src_id, request))
-    
+
     def __select_nodes_ids(self, master_info):
         index = 0
         src_index = 0
@@ -506,7 +518,7 @@ class OverlordRebalanceTask(threading.Thread):
         if target_index >= len(master_info):
             target_index = 0
         return [str(sorted_keys[src_index][0]), str(sorted_keys[target_index][0])]
-    
+
     def __select_move_keys(self, src_keys, target_keys, src_value, target_value):
         src_hashed = []
         target_hashed = []
@@ -530,7 +542,7 @@ class OverlordRebalanceTask(threading.Thread):
 
         offset = total_len // 2 - (((total_len % 2) + 1) % 2) - 1
         if src_value < target_value and max([k[0] for k in src_hashed]) > target_value:
-            uppers = [k for k in src_hashed if k[0] > src_value] 
+            uppers = [k for k in src_hashed if k[0] > src_value]
             if len(uppers) <= offset:
                 new_offset = offset - len(uppers)
                 new_value = src_hashed[new_offset][0]
