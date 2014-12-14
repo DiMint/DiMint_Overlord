@@ -177,7 +177,6 @@ class ZooKeeperManager():
         if (len(master_info_list) == 0):
             return None
         master_list = sorted(list(master_info_list.items()), key=lambda tup : int(tup[1]['value']))
-        print(master_list)
         hashed_value = Hash.get_hashed_value(key)
         for master in master_list:
             if (hashed_value <= int(master[1]['value'])):
@@ -344,7 +343,8 @@ class OverlordTask(threading.Thread):
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
                 sender = self.__context.socket(zmq.PUSH)
-                master_node, send_addr = self.__zk_manager.select_node(request['key'], cmd=='set')
+                #master_node, send_addr = self.__zk_manager.select_node(request['key'], cmd=='set')
+                master_node, send_addr = self.__zk_manager.select_node(request['key'], True)
                 if master_node is None:
                     response = {}
                     response['error'] = 'DIMINT_NODE_NOT_AVAILABLE'
@@ -518,10 +518,17 @@ class OverlordRebalanceTask(threading.Thread):
         src_hashed.sort(key=lambda tup: tup[0])
         total_len = len(src_keys) + len(target_keys)
         key_list = []
-        for i in range(int(total_len/2), len(src_keys)):
-            key_list.append(src_hashed[i][1])
 
-        offset = total_len // 2 - (((total_len % 2) + 1) % 2)
+        if src_value < target_value and max([k[0] for k in src_hashed]) > target_value:
+            lowers = [k for k in src_hashed if k[0] <= src_value] 
+            for i in range(int(total_len/2), len(src_keys)):
+                offset = (len(lowers) + i) % len(src_keys)
+                key_list.append(src_hashed[offset][1])
+        else:
+            for i in range(int(total_len/2), len(src_keys)):
+                key_list.append(src_hashed[i][1])
+
+        offset = total_len // 2 - (((total_len % 2) + 1) % 2) - 1
         if src_value < target_value and max([k[0] for k in src_hashed]) > target_value:
             uppers = [k for k in src_hashed if k[0] > src_value] 
             if len(uppers) <= offset:
@@ -533,6 +540,7 @@ class OverlordRebalanceTask(threading.Thread):
         else:
             new_value = src_hashed[offset][0]
         print (key_list)
+        print (src_hashed)
         return key_list, new_value
 
 class Overlord:
