@@ -92,9 +92,11 @@ class ZooKeeperManager():
         return overlord_list if isinstance(overlord_list, list) else []
 
     def get_master_info_list(self):
+        if not self.is_exist('/dimint/node/role'):
+            return {}
         master_node_list = self.__zk.get_children('/dimint/node/role')
         if not isinstance(master_node_list, list):
-            return []
+            return {}
         master_info = {}
         for master in master_node_list:
             info = json.loads(
@@ -116,16 +118,18 @@ class ZooKeeperManager():
 
     def get_node_value(self):
         master_info = self.get_master_info_list()
-        value_list = [m['value'] for m in master_info]
+        value_list = [m['value'] for m in master_info.values()]
         while True:
+            hash_value = Hash.get_hashed_value(time.time())
+            if not hash_value in value_list:
+                return hash_value
 
-        
-
-    def determine_node_role(self, node_id, msg):
+    def determine_node_role(self, node_id, node_value, msg):
         role_path = '/dimint/node/role'
         self.__zk.ensure_path(role_path)
         masters = self.__zk.get_children(role_path)
         msg['enabled'] = True
+        msg['value'] = node_value
         for master in masters:
             slaves = self.__zk.get_children(os.path.join(role_path, master))
             if len(slaves) < max(1, config.get('max_slave_count', 2)):
@@ -169,15 +173,15 @@ class ZooKeeperManager():
             return [master, slave_addr]
 
     def __select_master_node(self, key):
-        master_string_list = self.__zk.get_children('/dimint/node/role')
-        if (len(master_string_list) == 0):
+        master_info_list = self.get_master_info_list()
+        if (len(master_info_list) == 0):
             return None
-        master_list = sorted([int(m) for m in master_string_list])
+        master_list = sorted(list(master_info_list.items()), key=lambda tup : int(tup[1]['value']))
         hashed_value = Hash.get_hashed_value(key)
         for master in master_list:
-            if (hashed_value <= master):
-                return master
-        return master_list[0]
+            if (hashed_value <= int(master[1]['value'])):
+                return master[0]
+        return master_list[0][0]
 
     def __set_master_node_attribute(self, node, attr, value, extra=None):
         node_path = 'dimint/node/role/{0}'.format(node)
@@ -387,9 +391,11 @@ class OverlordTask(threading.Thread):
         zookeeper_hosts = config.get('zookeeper_hosts')
         print('zookeeper_hosts : ' + zookeeper_hosts)
         node_id = self.__zk_manager.get_identity()
-        role, master_addr, master_push_addr, master_receive_addr = self.__zk_manager.determine_node_role(node_id, msg)
+        node_value = self.__zk_manager.get_node_value()
+        role, master_addr, master_push_addr, master_receive_addr = self.__zk_manager.determine_node_role(node_id, node_value, msg)
         response = {
             "node_id": node_id,
+            "value": node_value,
             "zookeeper_hosts": zookeeper_hosts,
             "role": role,
         }
@@ -437,7 +443,7 @@ class OverlordRebalanceTask(threading.Thread):
             master_info = self.__zk_manager.get_master_info_list()
             if a == 'keys':
                 for k, v in master_info.items():
-                    print ('id: {0}, count: {1}, keys: {2}'.format(k, len(v['stored_key']), v['stored_key']))
+                    print ('id: {0}, value: {3}, count: {1}, keys: {2}'.format(k, len(v['stored_key']), v['stored_key'], v['value']))
                 continue
             if len(master_info) < 2:
                 continue
@@ -465,9 +471,9 @@ class OverlordRebalanceTask(threading.Thread):
         src_index = 0
         target_index = 0
         max_count = 0
-        sorted_keys = sorted([int(m) for m in master_info.keys()])
-        for k in sorted_keys:
-            key_count = len(master_info[str(k)]['stored_key'])
+        sorted_keys = sorted([(m, int(v['value'])) for m, v in master_info.items()], key=lambda x: x[1])
+        for node_id, k in sorted_keys:
+            key_count = len(master_info[node_id]['stored_key'])
             if key_count > max_count:
                 src_index = index
                 target_index = index + 1
@@ -477,7 +483,7 @@ class OverlordRebalanceTask(threading.Thread):
             return [None, None]
         if target_index >= len(master_info):
             target_index = 0
-        return [str(sorted_keys[src_index]), str(sorted_keys[target_index])]
+        return [str(sorted_keys[src_index][0]), str(sorted_keys[target_index][0])]
     
     def __select_move_keys(self, src_keys, target_keys):
         src_hashed = []
