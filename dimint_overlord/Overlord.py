@@ -144,7 +144,7 @@ class ZooKeeperManager():
                 self.__zk.create(os.path.join(role_path, master, node_id),
                                  json.dumps(msg).encode('utf-8'))
                 return "slave", master_addr, master_push_addr, master_receive_addr
-        msg['stored_key']={}
+        msg['stored_key']=[]
         self.__zk.create(os.path.join(role_path, node_id),
                          json.dumps(msg).encode('utf-8'))
         return "master", None, None, None
@@ -177,6 +177,7 @@ class ZooKeeperManager():
         if (len(master_info_list) == 0):
             return None
         master_list = sorted(list(master_info_list.items()), key=lambda tup : int(tup[1]['value']))
+        print(master_list)
         hashed_value = Hash.get_hashed_value(key)
         for master in master_list:
             if (hashed_value <= int(master[1]['value'])):
@@ -188,7 +189,7 @@ class ZooKeeperManager():
         node_info = json.loads(
               self.__zk.get(node_path)[0].decode('utf-8'))
         if extra is not None:
-            node_info[attr][value]=extra
+            node_info[attr] = list(set(node_info[attr]) | set([value]))
         else:
             node_info[attr] = value
         self.__zk.set(node_path, json.dumps(node_info).encode('utf-8'))
@@ -196,8 +197,27 @@ class ZooKeeperManager():
     def add_key_to_node(self, node, key):
         self.__set_master_node_attribute(node, 'stored_key', key, 0)
 
+    def add_key_list_to_node(self, node, key_list):
+        node_path = 'dimint/node/role/{0}'.format(node)
+        node_info = json.loads(
+            self.__zk.get(node_path)[0].decode('utf-8'))
+        node_info['stored_key'] += key_list
+        node_info['stored_key'] = list(set(node_info['stored_key']))
+        self.__zk.set(node_path, json.dumps(node_info).encode('utf-8'))
+      
+    def remove_key_list_from_node(self, node, key_list):
+        node_path = 'dimint/node/role/{0}'.format(node)
+        node_info = json.loads(
+            self.__zk.get(node_path)[0].decode('utf-8'))
+        node_info['stored_key'] = list(set(node_info['stored_key']) - set(key_list))
+
+        self.__zk.set(node_path, json.dumps(node_info).encode('utf-8'))
+ 
     def enable_node(self, node, enable=True):
         self.__set_master_node_attribute(node, 'enabled', enable)
+
+    def change_node_value(self, node, value):
+        self.__set_master_node_attribute(node, 'value', value)
 
     def get_node_msg(self, node_path):
         node = self.__zk.get(node_path)
@@ -334,10 +354,6 @@ class OverlordTask(threading.Thread):
                     sender.send_multipart([ident, msg])
                     if (cmd=='set'):
                         self.__zk_manager.add_key_to_node(master_node, request['key'])
-                sender.connect(send_addr)
-                sender.send_multipart([ident, msg])
-                if (cmd=='set'):
-                    self.__zk_manager.add_key_to_node(master_node, request['key'])
             elif cmd == 'state':
                 response = {}
                 node_list = self.__zk_manager.get_node_list()
@@ -380,8 +396,12 @@ class OverlordTask(threading.Thread):
         if msg.get('cmd') == 'connect' and backend is not None:
             self.add_node(ident, msg, backend)
         elif msg.get('cmd') == 'move_key' and backend is not None:
+            print(msg)
+            self.__zk_manager.remove_key_list_from_node(msg.get('src_id'), msg.get('key_list'))
+            self.__zk_manager.add_key_list_to_node(msg.get('target_node_id'), msg.get('key_list'))
+            self.__zk_manager.change_node_value(msg.get('src_id'), msg.get('new_src_value'))
             self.__zk_manager.enable_node(msg.get('src_id'))
-            self.__zk_manager.enable_node(msg.get('target_id'))
+            self.__zk_manager.enable_node(msg.get('target_node_id'))
         else:
             frontend.send_multipart([ident, response])
 
@@ -456,7 +476,9 @@ class OverlordRebalanceTask(threading.Thread):
             sender = self.__context.socket(zmq.PUSH)
             src_node = master_info[src_id]
             target_node = master_info[target_id]
-            request['key_list'] = self.__select_move_keys(src_node['stored_key'], target_node['stored_key'])
+            request['key_list'], request['new_src_value'] = self.__select_move_keys(
+                src_node['stored_key'], target_node['stored_key'],
+                src_node['value'], target_node['value'])
             request['target_node_id'] = target_id
             request['target_node'] = 'tcp://{0}:{1}'.format(target_node['ip'],
                                                       target_node['transfer_port'])
@@ -485,18 +507,33 @@ class OverlordRebalanceTask(threading.Thread):
             target_index = 0
         return [str(sorted_keys[src_index][0]), str(sorted_keys[target_index][0])]
     
-    def __select_move_keys(self, src_keys, target_keys):
+    def __select_move_keys(self, src_keys, target_keys, src_value, target_value):
         src_hashed = []
         target_hashed = []
         for k in src_keys:
             src_hashed.append((Hash.get_hashed_value(k), k))
+        for k in target_keys:
+            target_hashed.append((Hash.get_hashed_value(k), k))
+
         src_hashed.sort(key=lambda tup: tup[0])
         total_len = len(src_keys) + len(target_keys)
         key_list = []
         for i in range(int(total_len/2), len(src_keys)):
             key_list.append(src_hashed[i][1])
+
+        offset = total_len // 2 - (((total_len % 2) + 1) % 2)
+        if src_value < target_value and max([k[0] for k in src_hashed]) > target_value:
+            uppers = [k for k in src_hashed if k[0] > src_value] 
+            if len(uppers) <= offset:
+                new_offset = offset - len(uppers)
+                new_value = src_hashed[new_offset][0]
+            else:
+                new_value = uppers[offset][0]
+
+        else:
+            new_value = src_hashed[offset][0]
         print (key_list)
-        return key_list
+        return key_list, new_value
 
 class Overlord:
     __zk_manager = None
