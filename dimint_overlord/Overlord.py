@@ -9,7 +9,6 @@ from kazoo.client import KazooClient
 import sys
 import getopt
 import signal
-from multiprocessing import Process
 
 class Hash():
     @staticmethod
@@ -59,6 +58,7 @@ class ZooKeeperManager():
     __zk = None
     __hash_range = None
     __max_slave_count = None
+    __node_list = []
 
     def __init__(self, zookeeper_hosts, port_for_client, hash_range, max_slave_count):
         self.__zk = KazooClient(zookeeper_hosts)
@@ -70,18 +70,18 @@ class ZooKeeperManager():
         if not self.is_exist(host_path):
             self.__zk.create(host_path, b'', ephemeral=True)
 
-        self.node_list = []
         self.__zk.ensure_path('/dimint/node/list')
         self.__zk.ChildrenWatch('/dimint/node/list', self.check_node_is_dead)
         self.__hash_range = hash_range
         self.__max_slave_count = max_slave_count
 
     def delete_all_node_role(self):
+        self.__zk.ensure_path('/dimint/node/role')
         self.__zk.delete('/dimint/node/role', recursive=True)
 
     def get_node_list(self):
-        node_list = self.__zk.get_children('/dimint/node/list')
-        return node_list if isinstance(node_list, list) else []
+        self.__node_list = self.__zk.get_children('/dimint/node/list')
+        return self.__node_list if isinstance(self.__node_list, list) else []
 
     def get_overlord_list(self):
         overlord_list = self.__zk.get_children('/dimint/overlord/host_list')
@@ -229,7 +229,7 @@ class ZooKeeperManager():
         # then delete process should not be executed.
         role_path = '/dimint/node/role'
         handler_working_file = '/dimint/node/list/dead_node_handler_is_working'
-        dead_nodes = list(set(self.node_list) - set(node_list))
+        dead_nodes = list(set(self.__node_list) - set(node_list))
         if len(dead_nodes) == 1 and not self.__zk.exists(handler_working_file):
             self.__zk.create(handler_working_file, b'', ephemeral=True)
 
@@ -277,7 +277,7 @@ class ZooKeeperManager():
                         print('Master node without slave node is dead!')
 
             self.__zk.delete(handler_working_file)
-        self.node_list = node_list
+        self.__node_list = node_list
 
     def get_node_info(self, node_id):
         role_path = '/dimint/node/role'
