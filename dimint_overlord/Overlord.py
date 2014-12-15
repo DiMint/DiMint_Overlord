@@ -6,6 +6,7 @@ from hashlib import md5
 import os, random
 import psutil
 from kazoo.client import KazooClient
+from kazoo.exceptions import NoNodeError
 import sys
 import getopt
 import signal
@@ -92,7 +93,7 @@ class ZooKeeperManager():
         return overlord_list if isinstance(overlord_list, list) else []
 
     def get_master_info_list(self):
-        self.__zk.ensure_path('/dimint/node/role'):
+        self.__zk.ensure_path('/dimint/node/role')
         master_node_list = self.__zk.get_children('/dimint/node/role')
         master_info = {}
         for master in master_node_list:
@@ -216,8 +217,12 @@ class ZooKeeperManager():
     def get_node_msg(self, node_path):
         try:
             node = self.__zk.get(node_path)
+            # node[0] == b''
+            # b'' == False
+            if not node[0]:
+                return {}
             return json.loads(node[0].decode('utf-8'))
-        except kazoo.exceptions.NoNodeError as e:
+        except NoNodeError as e:
             return {}
 
     def set_node_msg(self, node_path, msg):
