@@ -77,22 +77,23 @@ class ZooKeeperManager():
 
     def delete_all_node_role(self):
         self.__zk.ensure_path('/dimint/node/role')
-        self.__zk.delete('/dimint/node/role', recursive=True)
+        master_node_list = self.__zk.get_children('/dimint/node/list')
+        for master_node in master_node_list:
+            self.__zk.delete(master_node, recursive=True)
 
     def get_node_list(self):
+        self.__zk.ensure_path('/dimint/node/list')
         self.__node_list = self.__zk.get_children('/dimint/node/list')
         return self.__node_list if isinstance(self.__node_list, list) else []
 
     def get_overlord_list(self):
+        self.__zk.ensure_path('/dimint/overlord/host_list')
         overlord_list = self.__zk.get_children('/dimint/overlord/host_list')
         return overlord_list if isinstance(overlord_list, list) else []
 
     def get_master_info_list(self):
-        if not self.is_exist('/dimint/node/role'):
-            return {}
+        self.__zk.ensure_path('/dimint/node/role'):
         master_node_list = self.__zk.get_children('/dimint/node/role')
-        if not isinstance(master_node_list, list):
-            return {}
         master_info = {}
         for master in master_node_list:
             info = json.loads(
@@ -102,9 +103,6 @@ class ZooKeeperManager():
 
     def is_exist(self, path):
         return self.__zk.exists(path)
-
-    def stop(self):
-        self.__zk.stop()
 
     def get_identity(self):
         while True:
@@ -181,7 +179,7 @@ class ZooKeeperManager():
         return master_list[0][0]
 
     def __set_master_node_attribute(self, node, attr, value, extra=None):
-        node_path = 'dimint/node/role/{0}'.format(node)
+        node_path = '/dimint/node/role/{0}'.format(node)
         node_info = json.loads(
               self.__zk.get(node_path)[0].decode('utf-8'))
         if extra is not None:
@@ -194,7 +192,7 @@ class ZooKeeperManager():
         self.__set_master_node_attribute(node, 'stored_key', key, 0)
 
     def add_key_list_to_node(self, node, key_list):
-        node_path = 'dimint/node/role/{0}'.format(node)
+        node_path = '/dimint/node/role/{0}'.format(node)
         node_info = json.loads(
             self.__zk.get(node_path)[0].decode('utf-8'))
         node_info['stored_key'] += key_list
@@ -202,7 +200,7 @@ class ZooKeeperManager():
         self.__zk.set(node_path, json.dumps(node_info).encode('utf-8'))
 
     def remove_key_list_from_node(self, node, key_list):
-        node_path = 'dimint/node/role/{0}'.format(node)
+        node_path = '/dimint/node/role/{0}'.format(node)
         node_info = json.loads(
             self.__zk.get(node_path)[0].decode('utf-8'))
         node_info['stored_key'] = list(set(node_info['stored_key']) - set(key_list))
@@ -216,12 +214,14 @@ class ZooKeeperManager():
         self.__set_master_node_attribute(node, 'value', value)
 
     def get_node_msg(self, node_path):
-        node = self.__zk.get(node_path)
-        if not node[0]:
+        try:
+            node = self.__zk.get(node_path)
+            return json.loads(node[0].decode('utf-8'))
+        except kazoo.exceptions.NoNodeError as e:
             return {}
-        return json.loads(node[0].decode('utf-8'))
 
     def set_node_msg(self, node_path, msg):
+        self.__zk.ensure_path(node_path)
         self.__zk.set(node_path, json.dumps(msg).encode('utf-8'))
 
     def check_node_is_dead(self, node_list):
@@ -349,7 +349,6 @@ class OverlordTask(threading.Thread):
             if cmd == 'get_overlords':
                 response = {}
                 response['overlords'] = self.__zk_manager.get_overlord_list()
-                response['identity'] = self.__zk_manager.get_identity()
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
                 sender = self.__context.socket(zmq.PUSH)
