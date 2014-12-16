@@ -129,8 +129,8 @@ class ZooKeeperManager():
             msg['src_node_id'] = node
             msg['src_node'] = 'tcp://{0}:{1}'.format(
                 node_info['ip'], node_info['cmd_receive_port'])
-                
-        self.kill_node([node])    
+
+        self.kill_node([node])
 
         msg['result'] = 'complete'
         return msg
@@ -284,7 +284,7 @@ class ZooKeeperManager():
             if node_info.get('role') == 'slave':
                 # if slave node is dead, there is nothing to do.
                 # Just update role information in zookeeper.
-                self.__zk.delete(os.path.join(role_path, 
+                self.__zk.delete(os.path.join(role_path,
                                               node_info['master_id'],
                                               target_node))
             else:
@@ -409,6 +409,8 @@ class OverlordTask(threading.Thread):
                 for node in node_list:
                     msg = self.__zk_manager.get_node_msg('/dimint/node/list/{0}'.format(node))
                     info = self.__zk_manager.get_node_info(node)
+                    if info is None:
+                        continue
                     if not msg is None:
                         msg['node_id'] = node
                         msg['role'] = info['role']
