@@ -71,7 +71,6 @@ class ZooKeeperManager():
         host_path = '/dimint/overlord/host_list/' + addr
         if not self.is_exist(host_path):
             self.__zk.create(host_path, b'', ephemeral=True)
-
         self.__zk.ensure_path('/dimint/node/list')
         self.__zk.ChildrenWatch('/dimint/node/list', self.check_node_is_dead)
         self.__hash_range = hash_range
@@ -106,25 +105,31 @@ class ZooKeeperManager():
     def delete_node(self, node, role):
         msg = {}
         msg['cmd'] = 'die'
-        master_info = self.get_master_info_list()
-        msg['src_node_id'] = node
-        msg['src_node'] = 'tcp://{0}:{1}'.format(
-            master_info[node]['ip'], master_info[node]['cmd_receive_port'])
         if role == 'master':
             self.enable_node(node, False)
             slaves = self.__zk.get_children('/dimint/node/role/{0}'.format(node))
+            master_info = self.get_master_info_list()
+            msg['src_node_id'] = node
+            msg['src_node'] = 'tcp://{0}:{1}'.format(
+                master_info[node]['ip'], master_info[node]['cmd_receive_port'])
             if len(slaves) == 0:
                 # need to move all keys to another node
                 if len(master_info) > 1:
                     msg['cmd'] = 'move_all_key'
-                    node_index = master_infos.keys().index(node)
+                    node_index = list(master_info.keys()).index(node)
                     node_index = (node_index+1) % len(master_info)
-                    next_node = master_infos.keys()[node_index]
+                    next_node = list(master_info.keys())[node_index]
                     self.enable_node(next_node, False)
-                    msg['key_list'] = master_info[node]['key_list']
+                    msg['key_list'] = master_info[node]['stored_key']
                     msg['target_node_id'] = next_node
                     msg['target_node'] = 'tcp://{0}:{1}'.format(
                         master_info[next_node]['ip'], master_info[next_node]['transfer_port'])
+        else:
+            node_info = self.get_node_info(node)
+            msg['src_node_id'] = node
+            msg['src_node'] = 'tcp://{0}:{1}'.format(
+                node_info['ip'], node_info['cmd_receive_port'])
+                
         self.kill_node([node])    
 
         msg['result'] = 'complete'
@@ -274,6 +279,8 @@ class ZooKeeperManager():
         self.__zk.create(handler_working_file, b'', ephemeral=True)
         for target_node in target_nodes:
             node_info = self.get_node_info(target_node)
+            if node_info is None:
+                break
             if node_info.get('role') == 'slave':
                 # if slave node is dead, there is nothing to do.
                 # Just update role information in zookeeper.
@@ -288,14 +295,20 @@ class ZooKeeperManager():
                     write_info = nominated_master_info.copy()
                     del write_info['node_id']
                     del write_info['value']
-                    del write_info['role']
+                    try:
+                        del write_info['role']
+                    except:
+                        pass
                     master_info = json.loads(self.__zk.get(master_path)[0].decode('utf-8'))
                     master_info.update(write_info)
                     self.__zk.create(os.path.join(role_path, nominated_master_info['node_id']), json.dumps(master_info).encode('utf-8'))
                     for other_slave in other_slaves:
                         other_slave_id = other_slave['node_id']
                         del other_slave['node_id']
-                        del other_slave['role']
+                        try:
+                            del other_slave['role']
+                        except:
+                            pass
                         self.__zk.create(
                             os.path.join(role_path, nominated_master_info['node_id'], other_slave_id), json.dumps(other_slave).encode('utf-8'))
                     self.__zk.delete(master_path, recursive=True)
@@ -326,8 +339,7 @@ class ZooKeeperManager():
                     result.update(json.loads(self.__zk.get(
                         os.path.join(role_path, master))[0].decode('utf-8')))
                     return result
-        raise Exception('Node {0} does not exist in zookeeper'.format(node_id))
-
+        return None
 
 class OverlordTask(threading.Thread):
     __zk_manager = None
@@ -452,7 +464,11 @@ class OverlordTask(threading.Thread):
         elif msg.get('cmd') == 'move_all_key' and backend is not None:
             print(msg)
             self.__zk_manager.add_key_list_to_node(msg.get('target_node_id'), msg.get('key_list'))
-            self.enable_node(msg.get('target_node_id'))
+            self.__zk_manager.enable_node(msg.get('target_node_id'))
+            sender = self.__context.socket(zmq.PUSH)
+            sender.connect(msg.get('src_node'))
+            sender.send_multipart([msg.get('src_node_id').encode('utf-8'), json.dumps(msg).encode('utf-8')])
+            print('Request to {0} : {1}'.format(msg.get('src_node_id'), msg))
         else:
             frontend.send_multipart([ident, response])
 
@@ -655,7 +671,7 @@ class OverlordRebalanceTask(threading.Thread):
 
 def handler(signum, frame):
     print('Signal handler called with signal', signum)
-    sys.exit(0)
+    os._exit(0)
 
 class Overlord:
     __overlord_task = None
@@ -695,7 +711,7 @@ def main(argv = sys.argv[1:]):
     try:
         opts, args = getopt.getopt(argv, '', ['help', 'config_path=', 'port_for_client=', 'port_for_node=', 'zookeeper_hosts=', 'hash_range=', 'max_slave_count='])
     except getopt.GetoptError as e:
-        sys.exit(2)
+        os._exit(2)
     config_path = os.path.join(os.path.dirname(__file__), 'dimint_overlord.config')
     port_for_client = None
     port_for_node = None
@@ -705,7 +721,7 @@ def main(argv = sys.argv[1:]):
     for opt, arg in opts:
         if opt == '--help':
             print('dimint_overlord.py --config_path=config_path --port_for_client=port_for_client --port_for_node=port_for_node --zookeeper_hosts=zookeeper_hosts --hash_range=hash_range --max_slave_count=max_slave_count')
-            sys.exit(0)
+            os._exit(0)
         elif opt == '--config_path':
             config_path = arg
         elif opt == '--port_for_client':
@@ -720,7 +736,6 @@ def main(argv = sys.argv[1:]):
             max_slave_count = arg
     overlord = Overlord()
     overlord.start_overlord(config_path, port_for_client, port_for_node, zookeeper_hosts, hash_range, max_slave_count)
-    sys.exit(0)
 
 if __name__ == "__main__":
     main()
