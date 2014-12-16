@@ -37,6 +37,7 @@ class OverlordStateTask(threading.Thread):
 
     def run(self):
         while True:
+            sys.stdout.flush()
             print('OverlordStateTask works')
             if self.__zk_manager is None:
                 return
@@ -335,6 +336,7 @@ class OverlordTask(threading.Thread):
         poll.register(frontend, zmq.POLLIN)
         poll.register(backend, zmq.POLLIN)
         while True:
+            sys.stdout.flush()
             sockets = dict(poll.poll())
             if frontend in sockets:
                 ident, msg = frontend.recv_multipart()
@@ -516,6 +518,7 @@ class OverlordRebalanceTask(threading.Thread):
 
     def run(self):
         while True:
+            sys.stdout.flush()
             if not self.__rebalancing:
                 time.sleep(10)
             request = {}
