@@ -618,11 +618,9 @@ class OverlordRebalanceTask(threading.Thread):
         print (src_hashed)
         return key_list, new_value
 
-def handler(self, signum, frame):
-    try:
-        print('Signal handler called with signal', signum)
-    except:
-        print('asdf')
+def handler(signum, frame):
+    print('Signal handler called with signal', signum)
+    sys.exit(0)
 
 class Overlord:
     __overlord_task = None
