@@ -359,7 +359,9 @@ class OverlordTask(threading.Thread):
                 self.__process_response(ident, response, frontend)
             elif cmd == 'get' or cmd == 'set':
                 sender = self.__context.socket(zmq.PUSH)
-                master_node, send_addr = self.__zk_manager.select_node(request['key'], cmd=='set')
+                is_strong = request.get('consistency', "week") == "strong"
+                master_node, send_addr = self.__zk_manager.select_node(request['key'],
+                                                                       cmd == 'set' or is_strong)
                 if master_node is None:
                     response = {}
                     response['error'] = 'DIMINT_NODE_NOT_AVAILABLE'
@@ -367,7 +369,7 @@ class OverlordTask(threading.Thread):
                 else:
                     sender.connect(send_addr)
                     sender.send_multipart([ident, msg])
-                    if (cmd=='set'):
+                    if cmd == 'set':
                         self.__zk_manager.add_key_to_node(master_node, request['key'])
             elif cmd == 'state':
                 response = {}
