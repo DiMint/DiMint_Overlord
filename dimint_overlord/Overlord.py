@@ -236,7 +236,7 @@ class ZooKeeperManager():
         role_path = '/dimint/node/role'
         handler_working_file = '/dimint/node/list/dead_node_handler_is_working'
         dead_nodes = list(set(self.__node_list) - set(node_list))
-        if len(dead_nodes) == 1 and not self.__zk.exists(handler_working_file):
+        if not self.__zk.exists(handler_working_file):
             self.__zk.create(handler_working_file, b'', ephemeral=True)
 
             for dead_node_id in dead_nodes:
@@ -445,7 +445,7 @@ class OverlordTask(threading.Thread):
             response['master_receive_addr'] = master_receive_addr
 
         backend.send_multipart([ident, json.dumps(response).encode('utf-8')])
-        
+
         if role == "master" and rebalance_request is not None:
             src_id = rebalance_request['src_node_id']
             self.__zk_manager.enable_node(src_id, False)
@@ -493,7 +493,7 @@ class OverlordTask(threading.Thread):
             if len(src_keys) == 0:
                 return None
             src_value = master_info[src_node_id]['value']
-            move_key_list, new_value = OverlordRebalanceTask.select_move_keys(src_keys, [], src_value, src_value, self.__hash_range)            
+            move_key_list, new_value = OverlordRebalanceTask.select_move_keys(src_keys, [], src_value, src_value, self.__hash_range)
             request = {}
             request['cmd'] = 'move_key'
             request['key_list'] = move_key_list
@@ -527,7 +527,7 @@ class OverlordRebalanceTask(threading.Thread):
             master_info = self.__zk_manager.get_master_info_list()
             for k, v in master_info.items():
                 print ('id: {0}, value: {3}, count: {1}, keys: {2}'.format(k, len(v['stored_key']), v['stored_key'], v['value']))
-            
+
             if len(master_info) < 2:
                 self.__rebalancing = False
                 continue
@@ -573,12 +573,12 @@ class OverlordRebalanceTask(threading.Thread):
         for i in range(len(sorted_keys)):
             s = i
             t = (i+1) % len(sorted_keys)
-            gap = len(master_info[sorted_keys[s][0]]['stored_key']) - len(master_info[sorted_keys[t][0]]['stored_key']) 
+            gap = len(master_info[sorted_keys[s][0]]['stored_key']) - len(master_info[sorted_keys[t][0]]['stored_key'])
             if gap > max_gap:
                 src_index = s
                 target_index = t
                 max_gap = gap
-        
+
         if max_gap == 0:
             return [None, None]
 
@@ -598,7 +598,7 @@ class OverlordRebalanceTask(threading.Thread):
         key_list = []
 
         if src_value <= target_value and max([k[0] for k in src_hashed]) > target_value:
-            lowers = [k for k in src_hashed if k[0] <= src_value] 
+            lowers = [k for k in src_hashed if k[0] <= src_value]
             for i in range(int(total_len/2), len(src_keys)):
                 offset = (len(lowers) + i) % len(src_keys)
                 key_list.append(src_hashed[offset][1])
