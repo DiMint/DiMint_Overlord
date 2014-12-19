@@ -125,6 +125,7 @@ KeyboardInterrupt
 * zookeeper_hosts: zookeeper host list. If zookeeper is multiple, each host is separated by comma. default is "127.0.0.1:2181".
 * hash\_range: key hash range. all keys are hashed and stored to proper nodes. default is 10000.
 * max\_slave\_count: maximum slave count for each master node. default is 2.
+
 ## Etc.
 * dimint 또는 dimint_overlord 프로그램이 오동작하는 경우가 있습니다. ps와 kill 명령어를 통해 강제종료시켜주시면 됩니다.
 * ZooKeeper에 쓰레기 값이 남아있어 오동작하는 경우가 있습니다. python test.py 명령어로 현재 ZooKeeper 상태를 확인할 수 있습니다.
