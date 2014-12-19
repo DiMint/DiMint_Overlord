@@ -19,6 +19,7 @@ $ python setup.py install
 ```
 설치가 완료되었습니다. 다음의 명령어로 virtualenv 환경을 빠져나오실 수 있습니다.
 다시 virtualenv 환경으로 가고 싶으시면 virtualenv가 설정된 myenv/bin/activate를 실행하시면 됩니다.
+```
 $ deactivate
 ```
 ##Execution
