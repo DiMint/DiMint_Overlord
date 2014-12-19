@@ -126,6 +126,10 @@ class ZooKeeperManager():
                         master_info[next_node]['ip'], master_info[next_node]['transfer_port'])
         else:
             node_info = self.get_node_info(node)
+            if node_info is None:
+                msg['result'] = 'complete'
+                return msg
+
             msg['src_node_id'] = node
             msg['src_node'] = 'tcp://{0}:{1}'.format(
                 node_info['ip'], node_info['cmd_receive_port'])
