@@ -118,6 +118,7 @@ Traceback (most recent call last):
   File "/usr/local/lib/python3.4/threading.py", line 1076, in _wait_for_tstate_lock
     elif lock.acquire(block, timeout):
 KeyboardInterrupt
+```
 ##Configuration
 * port\_for\_client: port for receive client's request and send to response to client. default is 5556.
 * port\_for\_node: port for send client's request to node and receive node's request. default is 5557,
